@@ -1,5 +1,8 @@
 # **HAM Repeaters** CHIRP
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+
 A small Python utility that merges multiple [CHIRP](https://chirpmyradio.com/)
 CSV exports into a single, cleaned, deduplicated CSV ready to be imported
 back into CHIRP and flashed onto an analogue radio.
@@ -196,5 +199,9 @@ row leaves them blank, and the radio bands accepted by the band filter.
 
 ## License
 
-No licence specified. Treat as personal-use code unless the repository
-owner adds one.
+Released under the [MIT License](LICENSE) — © 2026 xhico.
+
+You are free to use, modify, and redistribute this code, including in
+commercial projects, as long as the copyright notice and the license
+text are preserved. The software is provided "as is", without warranty
+of any kind.
