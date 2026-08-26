@@ -125,7 +125,7 @@ _CHIRP_HEADER: tuple[str, ...] = (
 # defaults to "\r\n" (RFC 4180), which makes git — configured here with
 # "* text=auto" — normalize the file to LF on commit and then warn that
 # the working copy differs ("This file uses 'CRLF' line endings, but Git
-# is configured to convert them to 'LF'"). Writing LF directly keeps the
+# is configured to convert them to 'LF'").Writing LF directly keeps the
 # working tree and the repository byte-identical. CHIRP accepts either.
 _CSV_LINE_TERMINATOR = "\n"
 
@@ -253,7 +253,7 @@ def _restore_snapshot_from_git(filename: str) -> bytes | None:
     try:
         # "HEAD:<path>" reads the committed blob without touching the
         # working tree or the index. The path is repo-relative and uses
-        # forward slashes even on Windows, hence the explicit replace.
+        # forward slashes even on Windows, hence the explicit replacement.
         result = subprocess.run(
             ["git", "show", f"HEAD:{path.replace(os.sep, '/')}"],
             capture_output=True,
