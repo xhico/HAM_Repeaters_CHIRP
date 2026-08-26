@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Upstream snapshots are stored byte-for-byte as the servers returned
+# them, so a diff shows exactly what each source changed. Line-ending
+# normalization would rewrite those bytes (portaldoradioamador.pt serves
+# CRLF), so it is disabled here. These stay plain text for diffing —
+# "-text" only turns off EOL conversion, it does not mark them binary.
+chirp_files/*.csv -text

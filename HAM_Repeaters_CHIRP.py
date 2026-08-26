@@ -22,21 +22,31 @@ Three sources are queried on every run, in declaration order:
 The ordering matters: deduplication is "first occurrence wins", so the
 source that appears first in the list takes precedence when the same
 "(Name, Frequency)" is reported by more than one upstream.
+
+Sources are fetched independently: one that is down or returns garbage
+is logged, and the run falls back to that source's last good snapshot
+under "chirp_files/" (recovered from git if the file is missing) so the
+merged output keeps its channels instead of losing them. A source is
+dropped only when there is no cache to fall back on either, and the run
+fails outright only when nothing at all is available.
 """
 
 # Standard-library only — this script intentionally has no third-party
 #  dependencies, so it can run on a stock Python 3.10+ interpreter.
 import csv  # Parses CHIRP-format CSV downloads and writes the merged CSV.
+import http.client  # Exception types for truncated/malformed HTTP responses.
 import io  # Wraps the downloaded CSV bytes into a file-like object for csv.DictReader.
 import json  # Decodes the radioamador.info JSON payload.
 import os  # Creates the snapshot directory and joins snapshot paths.
+import subprocess  # Runs "git show" to recover a deleted snapshot.
+import urllib.error  # HTTPError/URLError, raised when a source is unreachable.
 import urllib.request  # Stdlib HTTP client (no "requests" dependency).
 from typing import TypeAlias, cast
 
 # Type alias for a single CHIRP row. CHIRP CSVs are text-only, so every
 # column is a string — even numeric fields like "Frequency" are stored
 # as their decimal string representation ("145.6000", "0.600000", ...).
-# The explicit "TypeAlias" tag ensures static analysers treat this as a
+# The explicit "TypeAlias" tag ensures static analyzers treat this as a
 # type alias rather than a plain module-level attribute.
 Row: TypeAlias = dict[str, str]
 
@@ -77,6 +87,27 @@ _HTTP_USER_AGENT = "Mozilla/5.0 (HAM_Repeaters_CHIRP)"
 # not block the run indefinitely.
 _HTTP_TIMEOUT_SECONDS = 30
 
+# Exceptions that mean "this source did not give us usable data".
+# "_download_and_merge" catches these per source, logs them, and
+# carries on with whatever the other sources returned, so one flaky
+# upstream (a 5xx, a DNS blip, an HTML error page served as JSON)
+# cannot sink the whole run. Anything else propagates as a bug.
+_SOURCE_ERRORS: tuple[type[Exception], ...] = (
+    # urllib.error.HTTPError and URLError both subclass OSError, as do
+    # TimeoutError and the socket-level failures underneath them.
+    OSError,
+    # Truncated or otherwise malformed HTTP response bodies —
+    # http.client exceptions are NOT OSErrors, so list them too.
+    http.client.HTTPException,
+    # Upstream served an error page (or anything else) where the
+    # adapter expected JSON.
+    json.JSONDecodeError,
+    # Response body is not valid UTF-8.
+    UnicodeDecodeError,
+    # Malformed CSV (unbalanced quoting, oversized field, ...).
+    csv.Error,
+)
+
 # ---------------------------------------------------------------------
 # CHIRP schema
 # ---------------------------------------------------------------------
@@ -89,6 +120,14 @@ _CHIRP_HEADER: tuple[str, ...] = (
     "Mode", "TStep", "Skip", "Comment",
     "URCALL", "RPT1CALL", "RPT2CALL", "DVCODE",
 )
+
+# Line ending used for every CSV this script writes. The csv module
+# defaults to "\r\n" (RFC 4180), which makes git — configured here with
+# "* text=auto" — normalize the file to LF on commit and then warn that
+# the working copy differs ("This file uses 'CRLF' line endings, but Git
+# is configured to convert them to 'LF'"). Writing LF directly keeps the
+# working tree and the repository byte-identical. CHIRP accepts either.
+_CSV_LINE_TERMINATOR = "\n"
 
 # Fields the pipeline writes to. They must always exist in the output
 # header, even if none of the input CSVs contained them — otherwise the
@@ -188,6 +227,105 @@ def _save_snapshot(filename: str, raw: bytes) -> None:
     print(f"[..] Saved snapshot: {path}")
 
 
+def _restore_snapshot_from_git(filename: str) -> bytes | None:
+    """
+    Recover "_CHIRP_FILES_DIR/filename" from the last commit that has it.
+
+    Used only when the snapshot is missing from the working tree (a fresh
+    clone with the file deleted, an interrupted run, a stray "rm"). The
+    snapshots are committed, so git still holds the last version that was
+    checked in.
+
+    Parameters
+    ----------
+    filename : str
+        Basename inside "_CHIRP_FILES_DIR".
+
+    Returns
+    -------
+    bytes | None
+        The committed file contents, or "None" if git could not produce
+        them — not a repository, no commit touching that path, git not
+        installed, and so on. Every one of those is an ordinary "no
+        cache available" answer, not an error worth crashing over.
+    """
+    path = os.path.join(_CHIRP_FILES_DIR, filename)
+    try:
+        # "HEAD:<path>" reads the committed blob without touching the
+        # working tree or the index. The path is repo-relative and uses
+        # forward slashes even on Windows, hence the explicit replace.
+        result = subprocess.run(
+            ["git", "show", f"HEAD:{path.replace(os.sep, '/')}"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        # git is not installed or not on PATH.
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _load_cached_snapshot(filename: str) -> tuple[list[Row], list[str]] | None:
+    """
+    Replay the last good snapshot for a source that failed to download.
+
+    Prefers the copy in the working tree, since a failed fetch leaves the
+    previous run's snapshot untouched, making it the freshest data we
+    have. If that file is gone, the committed version is restored from
+    git and written back into "_CHIRP_FILES_DIR" so the next run finds
+    it on disk.
+
+    All three snapshots are stored in CHIRP CSV form — including the
+    JSON source's, which is saved as adapted CHIRP rows — so the cache
+    can always be parsed as CHIRP CSV regardless of the source's native
+    format.
+
+    Parameters
+    ----------
+    filename : str
+        Basename inside "_CHIRP_FILES_DIR".
+
+    Returns
+    -------
+    tuple[list[Row], list[str]] | None
+        "(rows, fieldnames)" from the cached snapshot, or "None" when no
+        usable cache exists (no file on disk, nothing in git, or the
+        cached bytes do not parse).
+    """
+    path = os.path.join(_CHIRP_FILES_DIR, filename)
+    origin = "working tree"
+
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError:
+        raw = _restore_snapshot_from_git(filename)
+        if raw is None:
+            return None
+        origin = "git"
+        # Put the recovered bytes back where the pipeline expects them,
+        # so a later run does not have to go through git again. A write
+        # failure here is not fatal — we already hold the data.
+        try:
+            _save_snapshot(filename, raw)
+        except OSError as exc:
+            print(f"[!!] Could not write recovered snapshot {path}: {exc}")
+
+    try:
+        rows, fieldnames = _parse_chirp_csv(raw)
+    except _SOURCE_ERRORS as exc:
+        print(f"[!!] Cached snapshot {path} is unusable: {type(exc).__name__}: {exc}")
+        return None
+
+    if not rows:
+        return None
+
+    print(f"[~~] Reusing {len(rows)} cached rows from {path} ({origin})")
+    return rows, fieldnames
+
+
 def _fetch_chirp_csv(url: str, snapshot_filename: str | None = None) -> tuple[list[Row], list[str]]:
     """
     Download a CHIRP-format CSV from "url" and return "(rows, fieldnames)".
@@ -219,14 +357,36 @@ def _fetch_chirp_csv(url: str, snapshot_filename: str | None = None) -> tuple[li
     raw = _http_get(url)
     if snapshot_filename is not None:
         _save_snapshot(snapshot_filename, raw)
-    # Decode the response body at once and wrap it in a StringIO so the csv
-    # module can consume it as a text stream without touching the disk.
-    text = raw.decode("utf-8")
-    reader = csv.DictReader(io.StringIO(text))
-    fieldnames = list(reader.fieldnames or [])
-    rows = list(reader)
+    rows, fieldnames = _parse_chirp_csv(raw)
     print(f"[..] Fetched {len(rows)} rows from {url}")
     return rows, fieldnames
+
+
+def _parse_chirp_csv(raw: bytes) -> tuple[list[Row], list[str]]:
+    """
+    Parse CHIRP-format CSV bytes into "(rows, fieldnames)".
+
+    Shared by the live downloads and the cached-snapshot fallback, so a
+    snapshot replayed from disk is parsed exactly like the download it
+    came from.
+
+    Parameters
+    ----------
+    raw : bytes
+        UTF-8 encoded CHIRP CSV: a header row plus one row per channel.
+
+    Returns
+    -------
+    rows : list[Row]
+        Parsed rows, in the order they appeared in the CSV.
+    fieldnames : list[str]
+        Column names from the CSV header, in the order they appeared.
+    """
+    # Decode the body at once and wrap it in a StringIO so the csv module
+    # can consume it as a text stream without touching the disk.
+    reader = csv.DictReader(io.StringIO(raw.decode("utf-8")))
+    fieldnames = list(reader.fieldnames or [])
+    return list(reader), fieldnames
 
 
 def _radioamador_repeater_to_row(entry: dict) -> Row | None:
@@ -400,6 +560,7 @@ def _fetch_radioamador_json(url: str, snapshot_filename: str | None = None) -> t
             fieldnames=list(_CHIRP_HEADER),
             restval="",
             extrasaction="ignore",
+            lineterminator=_CSV_LINE_TERMINATOR,
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -418,13 +579,28 @@ def _download_and_merge() -> tuple[list[Row], list[str]]:
     ordered by first appearance, with "_REQUIRED_FIELDS" appended if
     any of them were missing.
 
+    A source that cannot be downloaded or parsed (see "_SOURCE_ERRORS")
+    is logged with an "[!!]" line and then falls back to its last good
+    snapshot in "_CHIRP_FILES_DIR" — restored from git if the file is
+    missing — because upstreams go down often enough that a stale
+    repeater list beats no list at all. Cache hits are logged with
+    "[~~]". Only a source with no usable cache is dropped from the
+    merge entirely.
+
     Returns
     -------
     rows : list[Row]
-        Concatenated rows from every source, in fetch order.
+        Concatenated rows from every source that responded or had a
+        cached snapshot, in fetch order.
     fieldnames : list[str]
-        Union of every source's columns plus any required fields the
+        Union of those sources' columns plus any required fields the
         sources did not provide.
+
+    Raises
+    ------
+    RuntimeError
+        If *every* source failed with no cache to fall back on, leaving
+        nothing to merge.
     """
     rows: list[Row] = []
     fieldnames: list[str] = []
@@ -444,15 +620,42 @@ def _download_and_merge() -> tuple[list[Row], list[str]]:
         ("json", _RADIOAMADOR_INFO_URL, _RADIOAMADOR_INFO_SNAPSHOT),
     )
 
+    # URLs of the sources that produced nothing at all this run (neither
+    # a download nor a usable cache), used for the summary line below
+    # and to detect a total blackout.
+    failed: list[str] = []
+    # URLs served from a cached snapshot instead of a live download, so
+    # the summary can say the merge contains stale data.
+    stale: list[str] = []
+
     for kind, url, snapshot in sources:
-        if kind == "csv":
-            src_rows, src_fields = _fetch_chirp_csv(url, snapshot)
-        elif kind == "json":
-            src_rows, src_fields = _fetch_radioamador_json(url, snapshot)
-        else:
+        # Validate the dispatch key *before* the try block so a typo in
+        # the sources tuple stays a loud programming error instead of
+        # being swallowed as "that source was unavailable".
+        if kind not in ("csv", "json"):
             # Defensive guard for the day someone adds a new "kind"
             # to the source tuple without wiring up the dispatch.
             raise ValueError(f"Unknown source kind: {kind!r}")
+
+        try:
+            if kind == "csv":
+                src_rows, src_fields = _fetch_chirp_csv(url, snapshot)
+            else:
+                src_rows, src_fields = _fetch_radioamador_json(url, snapshot)
+        except _SOURCE_ERRORS as exc:
+            # One unreachable or malformed upstream should not abort the
+            # run. Log it, then fall back to this source's last good
+            # snapshot: a stale repeater list is far more useful than a
+            # missing one, and the snapshot is left untouched by a failed
+            # fetch, so it still holds the last successful download.
+            print(f"[!!] Failed to download {url}: {type(exc).__name__}: {exc}")
+            cached = _load_cached_snapshot(snapshot)
+            if cached is None:
+                print(f"[!!] No cached snapshot for {url} — skipping this source.")
+                failed.append(url)
+                continue
+            src_rows, src_fields = cached
+            stale.append(url)
 
         # Append any columns we haven't seen yet, in the order this
         # source listed them. This keeps the merged header stable and
@@ -462,6 +665,21 @@ def _download_and_merge() -> tuple[list[Row], list[str]]:
                 seen_fields.add(name)
                 fieldnames.append(name)
         rows.extend(src_rows)
+
+    if failed:
+        # Every source failed *and* had no cache to fall back on: there
+        # is nothing to merge, and continuing would only produce a
+        # confusing "no tone-enabled rows" error further down the
+        # pipeline. Fail loudly instead.
+        if len(failed) == len(sources):
+            raise RuntimeError(
+                "All repeater sources failed to download and no cached snapshots "
+                "were available; see the [!!] lines above. Output file not generated."
+            )
+        print(f"[!!] {len(failed)} of {len(sources)} sources unavailable — merging the rest.")
+
+    if stale:
+        print(f"[~~] {len(stale)} of {len(sources)} sources served from cache — output may be out of date.")
 
     # Make sure every column the pipeline writes to ends up in the
     # output header, even if no source provided it.
@@ -735,8 +953,16 @@ def _write_csv(output_file: str, fieldnames: list[str], rows: list[Row]) -> None
     -------
     None
     """
+    # newline="" stops the text layer from translating line endings, so
+    # the writer's own "lineterminator" is what actually reaches disk.
     with open(output_file, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, restval="", extrasaction="ignore")
+        writer = csv.DictWriter(
+            f,
+            fieldnames=fieldnames,
+            restval="",
+            extrasaction="ignore",
+            lineterminator=_CSV_LINE_TERMINATOR,
+        )
         writer.writeheader()
         writer.writerows(rows)
 
@@ -794,9 +1020,9 @@ def clean_chirp_csvs(output_file: str) -> None:
     ------
     ValueError
         If, after filtering, no tone-enabled rows remain to write.
-    urllib.error.URLError
-        If any remote source is unreachable or returns a non-2xx
-        response.
+    RuntimeError
+        If every remote source is unreachable or returns unusable data.
+        Individual sources that fail are logged and skipped instead.
 
     Returns
     -------
