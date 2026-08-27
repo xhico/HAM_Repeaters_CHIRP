@@ -16,28 +16,49 @@ consistent CTCSS tones, no duplicates, and sorted by frequency.
 
 ## Sources
 
-On every run the script fetches all three of the following sources over
-HTTPS and merges them in memory — nothing is cached to disk except the
-final output CSV.
+On every run the script fetches the following feeds over HTTPS and
+merges them in memory — nothing is written to disk except the final
+output CSV.
 
-| Source                                                                  | Format             | Notes                                                                |
-|-------------------------------------------------------------------------|--------------------|----------------------------------------------------------------------|
-| `https://repetidores.pt/gerarcsv.php`                                   | CHIRP CSV          | Consumed as-is.                                                      |
-| `https://portaldoradioamador.pt/backend/repeaters/export/chirp/`        | CHIRP CSV          | Consumed as-is.                                                      |
-| `https://api.radioamador.info/api/repeaters?limit=500`                  | JSON               | Adapted into CHIRP rows: FM-mode entries with a CTCSS tone only.     |
+| Feed                                                             | Format          | Notes                                                              |
+|------------------------------------------------------------------|-----------------|--------------------------------------------------------------------|
+| `https://repetidores.pt/json_vhf.php`                            | DataTables JSON | Adapted into CHIRP rows; tone-enabled repeaters only.              |
+| `https://repetidores.pt/json_uhf.php`                            | DataTables JSON | Same feed for UHF.                                                 |
+| `https://portaldoradioamador.pt/backend/repeaters/export/chirp/` | CHIRP CSV       | Consumed as-is.                                                    |
+| `https://api.radioamador.info/api/repeaters?limit=500`           | PayloadCMS JSON | Adapted into CHIRP rows: FM-mode entries with a CTCSS tone only.   |
 
-Both upstream servers reject the default `Python-urllib` User-Agent with
-HTTP 403, so a generic browser-style UA is sent on every request.
+Order matters — deduplication is first-occurrence-wins, so a feed listed
+earlier takes precedence when several publish the same channel.
+
+repetidores.pt also serves a ready-made CHIRP CSV at `/gerarcsv.php`,
+but the two JSON feeds above — the ones its own results table is built
+from — carry the same repeaters *plus* the channel bandwidth, QTH
+locator and owning association that the CSV export drops. Its
+`json_dmr.php` / `json_dstar.php` feeds are deliberately not merged:
+digital-only repeaters cannot be programmed as analogue FM channels.
+
+Every upstream rejects the default `Python-urllib` User-Agent with HTTP
+403, so a generic browser-style UA is sent on every request.
+
+### When a source is down
+
+Each feed is fetched independently. One that is unreachable or returns
+unusable data is logged with an `[!!]` line and skipped, and the merge
+continues with the rest — you lose that feed's unique channels for the
+run, not the whole output. The script only fails outright, with
+`RuntimeError`, when *every* feed is unusable.
 
 ---
 
 ## Features
 
-- **Download** — fetches every source over HTTPS in memory; no files
+- **Download** — fetches every feed over HTTPS in memory; no files
   written to disk besides the final merged CSV.
-- **Adapt** — converts the radioamador.info JSON payload into CHIRP rows
-  (output/input frequency → `Frequency`/`Duplex`/`Offset`, CTCSS tone
-  copied into `rToneFreq`/`cToneFreq`, `Mode=FM`).
+- **Adapt** — maps the JSON feeds into CHIRP rows: output/input
+  frequency → `Frequency`/`Duplex`/`Offset`, CTCSS tone copied into
+  `rToneFreq`/`cToneFreq`, and — for repetidores.pt, which reports
+  channel bandwidth — `Mode=NFM` for narrow (12.5 kHz) channels,
+  `Mode=FM` for wide ones.
 - **Filter** — drops rows that do not carry a CTCSS tone, since this
   workflow targets tone-enabled analogue repeaters only.
 - **Normalize** — keeps `rToneFreq` and `cToneFreq` consistent, fills
@@ -49,7 +70,7 @@ HTTP 403, so a generic browser-style UA is sent on every request.
   errors.
 - **Deduplicate** — removes duplicates by `(Name, Frequency)`, comparing
   `Frequency` as a float so `51.9900` and `51.990000` collapse into one
-  entry. The first occurrence wins (sources are queried in the order
+  entry. The first occurrence wins (feeds are queried in the order
   listed above).
 - **Sort** — orders the surviving rows by `Frequency` ascending.
 - **Renumber** — rewrites the `Location` column as a contiguous 0-based
@@ -62,8 +83,8 @@ HTTP 403, so a generic browser-style UA is sent on every request.
 - Python **3.10+** (uses builtin generics like `list[str]` / `set[tuple[...]]`
   and the PEP 604 `X | None` union syntax)
 - No third-party dependencies — only the Python standard library
-  (`csv`, `io`, `json`, `urllib.request`)
-- Outbound HTTPS access to the three source hosts listed above.
+  (`csv`, `http.client`, `io`, `json`, `urllib`)
+- Outbound HTTPS access to the source hosts listed above.
 
 ---
 
@@ -89,8 +110,8 @@ Python 3.10+ interpreter.
 
 ```
 HAM_Repeaters_CHIRP/
-├── HAM_Repeaters_CHIRP.py        # the download + merge + clean script
-└── chirp.csv      # generated output (after running the script)
+├── HAM_Repeaters_CHIRP.py   # the download + merge + clean script
+└── chirp.csv                # generated output (after running the script)
 ```
 
 The output header is the **union** of every source's fieldnames,
@@ -119,12 +140,22 @@ radio.
 Sample output:
 
 ```
-[..] Fetched 87 rows from https://repetidores.pt/gerarcsv.php
+[..] Fetched 29 rows from https://repetidores.pt/json_vhf.php
+[..] Fetched 58 rows from https://repetidores.pt/json_uhf.php
 [..] Fetched 143 rows from https://portaldoradioamador.pt/backend/repeaters/export/chirp/
 [..] Fetched 137 FM rows from https://api.radioamador.info/api/repeaters?limit=500
 [..] Removed 2 row(s) outside supported ranges 65.0-108.0MHz, 136.0-174.0MHz, 400.0-480.0MHz
 [..] Removed 201 duplicate row(s) by (Name, Frequency)
 [OK] Merged 163 rows into chirp.csv
+```
+
+A run where one feed is unavailable looks like this — note it still
+produces a usable file:
+
+```
+[!!] Skipping https://api.radioamador.info/api/repeaters?limit=500: HTTPError: HTTP Error 530: <none>
+[!!] 1 of 4 sources unavailable — merging the rest.
+[OK] Merged 144 rows into chirp.csv
 ```
 
 ### Custom output path
@@ -155,20 +186,20 @@ clean_chirp_csvs(output_file="/path/to/merged.csv")
 
 The script applies the following transformations, in order:
 
-| Step              | What it does                                                                       |
-|-------------------|------------------------------------------------------------------------------------|
-| 1. Download       | Fetches each remote source over HTTPS in memory                                    |
-| 2. Adapt          | Maps the radioamador.info JSON entries into CHIRP rows (FM + CTCSS only)           |
-| 3. Merge          | Concatenates rows; output header is the union of every source's fieldnames        |
-| 4. Filter         | Drops rows where `Tone` is empty                                                   |
-| 5. Tone normalize | Mirrors `cToneFreq` → `rToneFreq`; forces `Tone = "Tone"`                          |
-| 6. Defaults       | Fills empty `rToneFreq`/`cToneFreq` with `88.5`, empty `TStep` with `12.50`        |
-| 7. DVCODE reset   | Clears `DVCODE` (analogue-only workflow)                                           |
-| 8. Band filter    | Drops rows outside `65-108 MHz`, `136-174 MHz`, `400-480 MHz`                      |
-| 9. Deduplicate    | By `(Name, float(Frequency))`, first occurrence wins                               |
-| 10. Sort          | By `Frequency` ascending                                                           |
-| 11. Renumber      | Rewrites `Location` as a 0-based contiguous index                                  |
-| 12. Write         | Writes the merged CSV to `output_file`                                             |
+| Step              | What it does                                                                 |
+|-------------------|------------------------------------------------------------------------------|
+| 1. Download       | Fetches each feed over HTTPS in memory; a failing feed is logged and skipped |
+| 2. Adapt          | Maps the JSON feeds into CHIRP rows (tone-enabled, analogue-capable only)    |
+| 3. Merge          | Concatenates rows; output header is the union of every source's fieldnames   |
+| 4. Filter         | Drops rows where `Tone` is empty                                             |
+| 5. Tone normalize | Mirrors `cToneFreq` → `rToneFreq`; forces `Tone = "Tone"`                     |
+| 6. Defaults       | Fills empty `rToneFreq`/`cToneFreq` with `88.5`, empty `TStep` with `12.50`  |
+| 7. DVCODE reset   | Clears `DVCODE` (analogue-only workflow)                                     |
+| 8. Band filter    | Drops rows outside `65-108 MHz`, `136-174 MHz`, `400-480 MHz`                |
+| 9. Deduplicate    | By `(Name, float(Frequency))`, first occurrence wins                          |
+| 10. Sort          | By `Frequency` ascending                                                     |
+| 11. Renumber      | Rewrites `Location` as a 0-based contiguous index                            |
+| 12. Write         | Writes the merged CSV to `output_file`                                       |
 
 ---
 
@@ -178,30 +209,35 @@ The script is split into single-responsibility helpers around the public
 `clean_chirp_csvs` orchestrator. Each helper can also be imported on its
 own if you want to reuse one stage in another tool.
 
-| Function                                              | Purpose                                                                          |
-|-------------------------------------------------------|----------------------------------------------------------------------------------|
-| `clean_chirp_csvs(output_file)`                       | Public entry point — runs the full download + merge + clean pipeline             |
-| `main()`                                              | Default `__main__` entry point (writes to `chirp.csv`)            |
-| `_http_get(url)`                                      | HTTPS GET with the browser-style User-Agent and request timeout                  |
-| `_fetch_chirp_csv(url)`                               | Download a CHIRP-format CSV; return `(rows, fieldnames)`                         |
-| `_radioamador_repeater_to_row(entry)`                 | Map a single radioamador.info API entry into a CHIRP row (FM + CTCSS only)       |
-| `_fetch_radioamador_json(url)`                        | Download the radioamador.info JSON and adapt it into CHIRP rows                  |
-| `_download_and_merge()`                               | Fetch every source and return `(rows, union_of_fieldnames)`                      |
-| `_normalize_row(row)` / `_normalize_rows(rows)`       | Tone filter + field normalization (per-row and bulk)                             |
-| `_row_frequency(row)`                                 | Parse `Frequency` as `float` (0.0 fallback on bad input)                         |
-| `_is_supported_frequency(freq)` / `_filter_by_supported_frequency(rows)` | Drop rows whose frequency falls outside the supported radio bands |
-| `_dedupe_by_name_frequency(rows)`                     | First-occurrence-wins dedup by `(Name, float(Frequency))`                        |
-| `_sort_by_frequency(rows)`                            | In-place sort by `Frequency` ascending                                           |
-| `_renumber_locations(rows)`                           | Rewrite `Location` as a contiguous 0-based index                                 |
-| `_write_csv(output_file, fieldnames, rows)`           | `DictWriter` with `restval=""`, `extrasaction="ignore"`                          |
+| Function                                        | Purpose                                                                    |
+|-------------------------------------------------|----------------------------------------------------------------------------|
+| `clean_chirp_csvs(output_file)`                 | Public entry point — runs the full download + merge + clean pipeline       |
+| `main()`                                        | Default `__main__` entry point (writes to `chirp.csv`)                     |
+| `_http_get(url)`                                | HTTPS GET with the browser-style User-Agent and request timeout            |
+| `_chirp_row(name, out_f, in_f, tone, mode, comment)` | Build a CHIRP row, deriving `Duplex`/`Offset` from the frequency pair |
+| `_fetch_chirp_csv(url)`                         | Download a CHIRP-format CSV; return `(rows, fieldnames)`                   |
+| `_repetidores_entry_to_row(entry)`              | Map one repetidores.pt `aaData` array into a CHIRP row                     |
+| `_fetch_repetidores_json(url)`                  | Download a repetidores.pt `json_*.php` feed and adapt it                   |
+| `_radioamador_repeater_to_row(entry)`           | Map one radioamador.info API entry into a CHIRP row (FM + CTCSS only)      |
+| `_fetch_radioamador_json(url)`                  | Download the radioamador.info JSON and adapt it into CHIRP rows            |
+| `_download_and_merge()`                         | Fetch every feed and return `(rows, union_of_fieldnames)`                  |
+| `_normalize_row(row)` / `_normalize_rows(rows)` | Tone filter + field normalization (per-row and bulk)                       |
+| `_row_frequency(row)`                           | Parse `Frequency` as `float` (0.0 fallback on bad input)                   |
+| `_filter_by_supported_frequency(rows)`          | Drop rows whose frequency falls outside the supported radio bands          |
+| `_dedupe_by_name_frequency(rows)`               | First-occurrence-wins dedup by `(Name, float(Frequency))`                  |
+| `_renumber_locations(rows)`                     | Rewrite `Location` as a contiguous 0-based index                           |
+| `_write_csv(output_file, fieldnames, rows)`     | `DictWriter` with `restval=""`, `extrasaction="ignore"`                    |
 
-Module-level constants `_REPETIDORES_PT_URL`, `_PORTALDORADIOAMADOR_PT_URL`,
-`_RADIOAMADOR_INFO_URL`, `_HTTP_USER_AGENT`, `_HTTP_TIMEOUT_SECONDS`,
-`_CHIRP_HEADER`, `_REQUIRED_FIELDS`, `_DEFAULT_TONE_FREQ`,
+Module-level constants `_REPETIDORES_PT_VHF_URL`, `_REPETIDORES_PT_UHF_URL`,
+`_PORTALDORADIOAMADOR_PT_URL`, `_RADIOAMADOR_INFO_URL`, `_HTTP_USER_AGENT`,
+`_HTTP_TIMEOUT_SECONDS`, `_SOURCE_ERRORS`, `_CHIRP_HEADER`,
+`_CSV_LINE_TERMINATOR`, `_REQUIRED_FIELDS`, `_DEFAULT_TONE_FREQ`,
 `_DEFAULT_TSTEP`, and `_SUPPORTED_FREQ_RANGES` centralize the remote
-endpoints, HTTP request settings, canonical CHIRP header, columns the
-pipeline writes to, the safe numeric defaults injected when a source row
-leaves them blank, and the radio bands accepted by the band filter.
+endpoints, HTTP request settings, the exception types treated as "this
+feed gave us nothing usable", the canonical CHIRP header, the line
+ending written to the output CSV, the columns the pipeline writes to,
+the safe numeric defaults injected when a source row leaves them blank,
+and the radio bands accepted by the band filter.
 
 ---
 
@@ -209,10 +245,11 @@ leaves them blank, and the radio bands accepted by the band filter.
 
 - `ValueError: No valid tone-enabled rows found. Output file not
   generated.` — every row was filtered out (no tone), so nothing is
-  written.
-- `urllib.error.URLError` / `urllib.error.HTTPError` — a remote source
-  is unreachable or returned a non-2xx response. Check connectivity to
-  the source hosts listed above.
+  written and any existing output file is left untouched.
+- `RuntimeError: All repeater sources failed to download ...` — every
+  feed was unreachable or returned unusable data. A single failing feed
+  is logged and skipped instead; see
+  [When a source is down](#when-a-source-is-down).
 
 ---
 
