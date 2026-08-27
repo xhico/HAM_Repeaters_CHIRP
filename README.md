@@ -5,8 +5,8 @@
 
 A small Python utility that builds a [CHIRP](https://chirpmyradio.com/)
 CSV of Portuguese amateur repeaters straight from
-[ANACOM](https://www.anacom.pt/)'s licence registry — the national
-regulator's own record of every authorised station, and the source the
+[ANACOM](https://www.anacom.pt/)'s license registry — the national
+regulator's own record of every authorized station, and the source the
 community repeater directories ultimately derive from.
 
 The result is a single channel list with consistent CTCSS tones, no
@@ -36,7 +36,7 @@ That third step is one request per repeater, so a full run issues around
 140 requests and takes roughly **90 seconds to two minutes**, with a
 deliberate short pause between them to stay courteous to a government
 site. It is designed to be run occasionally — monthly is plenty, since
-licences change slowly — not on a schedule.
+licenses change slowly — not on a schedule.
 
 Only stations typed `Estação repetidora de modulação analógica` are used.
 ANACOM's other categories in this search are beacons and stations with no
@@ -45,7 +45,7 @@ assigned frequencies, neither of which belongs in a CHIRP channel list.
 ### What this does and does not give you
 
 ANACOM is authoritative about what is **licensed**. It cannot tell you
-what is actually **on the air** — a licence may cover a repeater that is
+what is actually **on the air** — a license may cover a repeater that is
 switched off, awaiting installation, or operating differently from its
 paperwork. It also does not publish the channel bandwidth, so every row
 is written as `Mode=FM`.
@@ -115,7 +115,7 @@ HAM_Repeaters_CHIRP/
 The output always uses the canonical CHIRP header:
 `Location,Name,Frequency,Duplex,Offset,Tone,rToneFreq,cToneFreq,DtcsCode,DtcsPolarity,Mode,TStep,Skip,Comment,URCALL,RPT1CALL,RPT2CALL,DVCODE`.
 
-`Comment` carries the QTH locator, the channel designator and the licence
+`Comment` carries the QTH locator, the channel designator and the license
 holder, for example:
 `HM76KX - RV48 - Associação de Radioamadores Marienses`.
 
@@ -193,7 +193,7 @@ build_chirp_csv(output_file="/path/to/repeaters.csv")
 | `_open_session()` | Open the search session; return `(opener, jsessionid)` |
 | `_post(opener, url, fields)` | POST form fields through the session |
 | `_parse_result_rows(page)` | Extract the analogue repeaters from the results table |
-| `_fetch_detail(opener, eucla_id)` | Fetch one station's detail page as labelled fields |
+| `_fetch_detail(opener, eucla_id)` | Fetch one station's detail page as labeled fields |
 | `_to_chirp_row(record, detail)` | Combine a results row and its detail into a CHIRP row |
 | `_download_repeaters()` | Run the whole scrape; return CHIRP rows |
 | `_strip_markup(fragment)` | Reduce an HTML fragment to collapsed text |
