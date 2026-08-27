@@ -70,7 +70,7 @@ being a registry, not a bug in this script.
 - **Deduplicate** — by `(Name, Frequency)`, comparing the frequency as a
   float so `51.9900` and `51.990000` collapse into one entry.
 - **Sort** — by `Frequency` ascending.
-- **Renumber** — rewrites `Location` as a contiguous 0-based sequence.
+- **Renumber** — rewrites `Location` as a contiguous sequence starting at 1.
 - **Refuses to guess** — if the scrape returns implausibly few rows, the
   script fails instead of overwriting a good CSV with a broken one.
 
@@ -179,7 +179,7 @@ build_chirp_csv(output_file="/path/to/repeaters.csv")
 | 6. Band filter | Drops rows outside `65-108`, `136-174`, `400-480 MHz` |
 | 7. Deduplicate | By `(Name, float(Frequency))`, first occurrence wins |
 | 8. Sort | By `Frequency` ascending |
-| 9. Renumber | Rewrites `Location` as a 0-based contiguous index |
+| 9. Renumber | Rewrites `Location` as a contiguous index starting at 1 |
 | 10. Write | Writes the CSV to `output_file` |
 
 ---
@@ -201,7 +201,7 @@ build_chirp_csv(output_file="/path/to/repeaters.csv")
 | `_row_frequency(row)` | Parse `Frequency` as `float` (0.0 fallback) |
 | `_filter_by_supported_frequency(rows)` | Drop out-of-band rows |
 | `_dedupe_by_name_frequency(rows)` | First-occurrence-wins dedup |
-| `_renumber_locations(rows)` | Rewrite `Location` as a contiguous index |
+| `_renumber_locations(rows)` | Rewrite `Location` as a contiguous index starting at 1 |
 | `_write_csv(output_file, rows)` | `DictWriter` with `restval=""`, `extrasaction="ignore"` |
 
 Module-level constants `_ANACOM_FORM_URL`, `_ANACOM_RESULTS_URL`,

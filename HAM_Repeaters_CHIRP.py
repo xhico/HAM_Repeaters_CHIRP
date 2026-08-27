@@ -377,8 +377,8 @@ def _dedupe_by_name_frequency(rows: list[Row]) -> list[Row]:
 
 
 def _renumber_locations(rows: list[Row]) -> None:
-    """Rewrite "Location" as a contiguous 0-based index, in place."""
-    for index, row in enumerate(rows):
+    """Rewrite "Location" as a contiguous index starting at 1, in place."""
+    for index, row in enumerate(rows, start=1):
         row["Location"] = str(index)
 
 
