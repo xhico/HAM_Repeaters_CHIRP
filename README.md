@@ -58,7 +58,7 @@ being a registry, not a bug in this script.
 ## Features
 
 - **Scrape** — walks ANACOM's search form and per-station detail pages,
-  in memory; nothing is written to disk except the final CSV.
+  in memory; the only files written are the outputs below.
 - **Adapt** — licensed emission/reception frequencies become
   `Frequency`/`Duplex`/`Offset`, and `Tom de proteção` becomes
   `rToneFreq`/`cToneFreq`.
@@ -74,6 +74,8 @@ being a registry, not a bug in this script.
 - **Renumber** — rewrites `Location` as a contiguous sequence starting at 1.
 - **Distance** — with `HOME_CENTER_LAT` / `HOME_CENTER_LON` set, appends
   each repeater's distance from you to its `Comment` (see below).
+- **Browser view** — every run also writes `chirp.html`, the same
+  channels as a filterable, printable page (see below).
 - **Refuses to guess** — if the scrape returns implausibly few rows, the
   script fails instead of overwriting a good CSV with a broken one.
 
@@ -113,12 +115,14 @@ Python 3.10+ interpreter.
 ```
 HAM_Repeaters_CHIRP/
 ├── HAM_Repeaters_CHIRP.py   # the scrape + build script
+├── chirp_to_html.py         # renders the CSV as a browser page
 ├── .env.example             # template for your station position
 ├── .env                     # your position (gitignored, you create this)
-└── chirp.csv                # generated output (gitignored)
+├── chirp.csv                # generated output (gitignored)
+└── chirp.html               # generated browser view (gitignored)
 ```
 
-`chirp.csv` is not tracked. Once `HOME_CENTER_LAT` / `HOME_CENTER_LON` are
+Neither output is tracked. Once `HOME_CENTER_LAT` / `HOME_CENTER_LON` are
 set, every row carries its distance from you — and the nearest repeater
 reads `0 km`, which gives your QTH away to anyone who reads the file. Run
 the script to generate your own.
@@ -157,6 +161,7 @@ Sample output:
 [..] Fetched details 140/140
 [..] Skipped 1 station(s) with no CTCSS tone or no frequency pair
 [OK] Wrote 139 rows to chirp.csv
+[OK] Wrote chirp.html
 ```
 
 ### Custom output path
@@ -174,6 +179,28 @@ Or import it from another script:
 from HAM_Repeaters_CHIRP import build_chirp_csv
 
 build_chirp_csv(output_file="/path/to/repeaters.csv")
+```
+
+---
+
+## Browser view
+
+Every run also writes `chirp.html` next to the CSV — the same channels as
+a self-contained page, with all 18 CHIRP columns, every callsign linked
+to its page on [radioamador.info](https://www.radioamador.info/), and a
+filter box that matches any field as you type.
+
+Open it in a browser, or **File → Print → Save as PDF** for a printed
+reference: the print stylesheet switches to A4 landscape, drops the
+filter box, repeats the table header on every page and avoids splitting
+rows across pages.
+
+The page needs no network access and no assets, so it works offline.
+
+To re-render from an existing CSV without scraping ANACOM again:
+
+```bash
+python3 chirp_to_html.py [chirp.csv] [chirp.html]
 ```
 
 ---

@@ -20,6 +20,7 @@ of minutes and issues ~140 requests. It is meant to be run occasionally
 
 Rows are then filtered to tone-enabled analogue repeaters inside the
 radio's supported bands, deduplicated, sorted by frequency and numbered.
+Each run writes chirp.csv for CHIRP and chirp.html to read in a browser.
 """
 
 # Standard library only, so this runs on a stock Python 3.10+ interpreter.
@@ -35,6 +36,8 @@ import time
 import urllib.parse
 import urllib.request
 from typing import TypeAlias
+
+import chirp_to_html  # sibling module: renders the browser view
 
 # A CHIRP row. CHIRP CSVs are text-only, so every column is a string —
 # even numeric ones ("145.6000", "0.600000").
@@ -411,6 +414,10 @@ def _to_chirp_row(
         # Stored as text to keep the row a plain dict[str, str]; the writer
         # drops it, and _row_distance reads it back for the sort.
         _DISTANCE_KEY: "" if distance is None else f"{distance:.3f}",
+        # ANACOM's record id, for the browser view to link the callsign
+        # back to the registry. Not a CHIRP column, so it never reaches
+        # the CSV either.
+        chirp_to_html.ANACOM_ID_FIELD: record["eucla_id"],
         "Location": "",
         "Name": record["callsign"],
         "Frequency": f"{out_f:.4f}",
@@ -560,9 +567,29 @@ def _write_csv(output_file: str, rows: list[Row]) -> None:
 # ---------------------------------------------------------------------
 
 
+def _write_browser_view(csv_path: str, rows: list[Row]) -> None:
+    """
+    Write the HTML view beside the CSV, as "chirp.csv" -> "chirp.html".
+
+    A problem here must not cost a finished scrape, so it is reported and
+    the CSV — the thing the radio actually needs — still stands.
+    """
+    target = os.path.splitext(csv_path)[0] + ".html"
+    try:
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(chirp_to_html.build_html(rows, list(_CHIRP_HEADER), csv_path))
+    except OSError as exc:
+        print(f"[!!] Could not write {target}: {type(exc).__name__}: {exc}")
+        return
+    print(f"[OK] Wrote {target}")
+
+
 def build_chirp_csv(output_file: str) -> None:
     """
     Scrape ANACOM, build the channel list and write it to "output_file".
+
+    Also writes the browser view alongside it, so every run leaves a
+    readable, printable copy next to the one CHIRP imports.
 
     Raises ValueError if nothing survives filtering — better than
     clobbering an existing CSV with an empty one.
@@ -579,6 +606,7 @@ def build_chirp_csv(output_file: str) -> None:
 
     _write_csv(output_file, rows)
     print(f"[OK] Wrote {len(rows)} rows to {output_file}")
+    _write_browser_view(output_file, rows)
 
 
 def main() -> None:

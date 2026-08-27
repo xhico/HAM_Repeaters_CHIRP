@@ -185,3 +185,6 @@ cython_debug/
 
 # Generated output — contains your distances once HOME_CENTER_* is set
 chirp.csv
+
+# Generated browser view of chirp.csv — same private distances
+chirp.html
