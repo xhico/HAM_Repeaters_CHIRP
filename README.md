@@ -76,6 +76,8 @@ being a registry, not a bug in this script.
   each repeater's distance from you to its `Comment` (see below).
 - **Browser view** — every run also writes `chirp.html`, the same
   channels as a filterable, printable page (see below).
+- **Change report** — each run ends by saying what moved since the
+  previous one: stations added, removed, or with altered settings.
 - **Refuses to guess** — if the scrape returns implausibly few rows, the
   script fails instead of overwriting a good CSV with a broken one.
 
@@ -162,6 +164,7 @@ Sample output:
 [..] Skipped 1 station(s) with no CTCSS tone or no frequency pair
 [OK] Wrote 139 rows to chirp.csv
 [OK] Wrote chirp.html
+[OK] No changes since the last run (139 channels).
 ```
 
 ### Custom output path
@@ -180,6 +183,35 @@ from HAM_Repeaters_CHIRP import build_chirp_csv
 
 build_chirp_csv(output_file="/path/to/repeaters.csv")
 ```
+
+---
+
+## What changed since last time
+
+Every run finishes by comparing the new list against the CSV the previous
+run left, so a monthly run tells you what ANACOM actually changed:
+
+```
+[!!] Changes since the last run: 1 added, 1 removed, 2 modified
+       + CQ0UXX      439.3000  IN51PT - RU744 - Rede dos Emissores Portugueses
+       - CQ0UYY      438.7000  IM57QH - RU698 - ARSUL
+       ~ CQ0VSF      145.6125  rToneFreq: 88.5 -> 123.0
+                               cToneFreq: 88.5 -> 123.0
+       ~ CQ0VTA      145.6250  Frequency: 145.7000 -> 145.6250
+```
+
+Stations are matched by callsign, so a retuned repeater reads as
+`Frequency: … -> …` rather than as one channel disappearing and another
+appearing.
+
+Two fields are deliberately excluded from the comparison. `Location` is a
+positional index that shifts whenever anything is added or removed, so
+comparing it would mark every channel as changed. The distance is trimmed
+off the comment for the same reason — moving your own station should not
+read as every repeater having changed.
+
+On the first run, with no previous CSV to compare against, it says so and
+moves on.
 
 ---
 

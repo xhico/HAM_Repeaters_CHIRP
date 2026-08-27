@@ -125,7 +125,7 @@ _DMS_RE = re.compile(r"(\d+)\D+(\d+)'\s*(\d+)\"(?:,(\d+))?\s*([NSEWnsew])")
 
 # Key used to carry a row's distance through sorting. It is not a CHIRP
 # column: the writer's extrasaction="ignore" keeps it out of the file.
-_DISTANCE_KEY = "_distance_km"
+_DISTANCE_KEY = chirp_to_html.DISTANCE_FIELD
 
 # Bands the radio accepts, MHz, inclusive. Anything else is dropped, since
 # CHIRP rejects it with "Frequency X is out of supported ranges ...".
@@ -567,6 +567,103 @@ def _write_csv(output_file: str, rows: list[Row]) -> None:
 # ---------------------------------------------------------------------
 
 
+def _read_previous(path: str) -> list[Row]:
+    """Read the CSV left by an earlier run, or an empty list if there is none."""
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except (OSError, csv.Error):
+        return []
+
+
+def _index_by_channel(rows: list[Row]) -> dict[str, Row]:
+    """
+    Key rows by callsign for comparison between runs.
+
+    Callsigns are unique in the registry today, and keying on one means a
+    retuned repeater reads as "Frequency changed" rather than as one
+    channel vanishing and another appearing. A duplicate — should ANACOM
+    ever license two channels to one callsign — falls back to including
+    the frequency, so neither entry is silently dropped.
+    """
+    indexed: dict[str, Row] = {}
+    for row in rows:
+        name = (row.get("Name") or "").strip()
+        key = name
+        if key in indexed:
+            # Re-key the first one too, so the pair stays comparable.
+            first = indexed.pop(key)
+            indexed[f"{name} {first.get('Frequency', '')}"] = first
+            key = f"{name} {row.get('Frequency', '')}"
+        indexed[key] = row
+    return indexed
+
+
+def _comparable(row: Row) -> dict[str, str]:
+    """
+    Reduce a row to the fields worth comparing between runs.
+
+    "Location" is dropped: it is a positional index that shifts whenever
+    anything is added or removed, so comparing it would mark every channel
+    as changed. The distance is trimmed off the comment for the same
+    reason — moving house should not read as 139 altered repeaters.
+    """
+    fields = {
+        name: (row.get(name) or "").strip()
+        for name in _CHIRP_HEADER
+        if name != "Location"
+    }
+    fields["Comment"] = chirp_to_html.COMMENT_DISTANCE_RE.sub("", fields["Comment"]).strip()
+    return fields
+
+
+def _report_changes(previous: list[Row], current: list[Row]) -> None:
+    """
+    Print what changed since the last run, station by station.
+
+    Silent about the ordinary case only in the sense that it says so
+    plainly: knowing nothing moved is as useful as knowing what did.
+    """
+    if not previous:
+        print("[..] No previous list to compare against — this is the first run.")
+        return
+
+    before, after = _index_by_channel(previous), _index_by_channel(current)
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+
+    changed: list[tuple[str, list[str]]] = []
+    for key in sorted(set(before) & set(after)):
+        was, now = _comparable(before[key]), _comparable(after[key])
+        fields = [
+            f"{name}: {was[name] or '(blank)'} -> {now[name] or '(blank)'}"
+            for name in was
+            if was[name] != now[name]
+        ]
+        if fields:
+            changed.append((key, fields))
+
+    if not (added or removed or changed):
+        print(f"[OK] No changes since the last run ({len(current)} channels).")
+        return
+
+    print(
+        f"[!!] Changes since the last run: {len(added)} added, "
+        f"{len(removed)} removed, {len(changed)} modified"
+    )
+    for key in added:
+        row = after[key]
+        print(f"       + {key:9} {row.get('Frequency', ''):>10}  {row.get('Comment', '')}")
+    for key in removed:
+        row = before[key]
+        print(f"       - {key:9} {row.get('Frequency', ''):>10}  {row.get('Comment', '')}")
+    for key, fields in changed:
+        head = f"       ~ {key:9} {after[key].get('Frequency', ''):>10}  "
+        print(head + fields[0])
+        for extra in fields[1:]:
+            print(" " * len(head) + extra)
+
+
 def _write_browser_view(csv_path: str, rows: list[Row]) -> None:
     """
     Write the HTML view beside the CSV, as "chirp.csv" -> "chirp.html".
@@ -577,7 +674,7 @@ def _write_browser_view(csv_path: str, rows: list[Row]) -> None:
     target = os.path.splitext(csv_path)[0] + ".html"
     try:
         with open(target, "w", encoding="utf-8") as f:
-            f.write(chirp_to_html.build_html(rows, list(_CHIRP_HEADER), csv_path))
+            f.write(chirp_to_html.build_html(rows, csv_path))
     except OSError as exc:
         print(f"[!!] Could not write {target}: {type(exc).__name__}: {exc}")
         return
@@ -589,11 +686,15 @@ def build_chirp_csv(output_file: str) -> None:
     Scrape ANACOM, build the channel list and write it to "output_file".
 
     Also writes the browser view alongside it, so every run leaves a
-    readable, printable copy next to the one CHIRP imports.
+    readable, printable copy next to the one CHIRP imports, and finishes
+    by reporting what changed since the previous run.
 
     Raises ValueError if nothing survives filtering — better than
     clobbering an existing CSV with an empty one.
     """
+    # Read the previous list before anything can overwrite it.
+    previous = _read_previous(output_file)
+
     rows = _download_repeaters()
     rows = _filter_by_supported_frequency(rows)
     rows = _dedupe_by_name_frequency(rows)
@@ -607,6 +708,7 @@ def build_chirp_csv(output_file: str) -> None:
     _write_csv(output_file, rows)
     print(f"[OK] Wrote {len(rows)} rows to {output_file}")
     _write_browser_view(output_file, rows)
+    _report_changes(previous, rows)
 
 
 def main() -> None:

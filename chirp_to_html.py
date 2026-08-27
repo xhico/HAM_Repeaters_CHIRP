@@ -20,6 +20,7 @@ chirp.html as private in the same way as chirp.csv.
 
 import csv
 import html
+import re
 import sys
 from datetime import datetime
 from urllib.parse import quote
@@ -37,14 +38,27 @@ _ANACOM_DETAIL_URL = "https://www.anacom.pt/saas/detalhes-eucla.do?detailsBean.e
 # page rendered from a CSV alone simply shows callsigns without links.
 ANACOM_ID_FIELD = "_anacom_id"
 
-# Columns worth keeping narrow, so the wide ones (Comment) get the room.
-_NARROW_COLUMNS = frozenset(
-    {
-        "Location", "Duplex", "Tone", "rToneFreq", "cToneFreq",
-        "DtcsCode", "DtcsPolarity", "Mode", "TStep", "Skip",
-        "URCALL", "RPT1CALL", "RPT2CALL", "DVCODE",
-    }
+# The CHIRP columns worth reading on screen. The rest — Duplex, Tone,
+# DtcsCode, the D-STAR fields and so on — are constant or empty across the
+# whole list, so they only cost width. They all remain in the CSV.
+_DISPLAY_COLUMNS: tuple[str, ...] = (
+    "Location", "Name", "Frequency", "Offset", "rToneFreq", "cToneFreq", "Comment",
 )
+
+# Synthesized, not a CHIRP column: the distance the pipeline works out
+# from HOME_CENTER_LAT / HOME_CENTER_LON.
+_DISTANCE_COLUMN = "Distance"
+
+# Rows carry that distance in km under this key when
+# HAM_Repeaters_CHIRP.py built them. As a fallback — a page rendered from
+# a CSV alone — it is read back off the end of the Comment.
+DISTANCE_FIELD = "_distance_km"
+
+# The trailing " - 123 km" the pipeline appends to Comment. It moves into
+# its own column here, so it is stripped from the comment text.
+# HAM_Repeaters_CHIRP.py reuses this to compare runs without treating a
+# change of home position as a change to every channel.
+COMMENT_DISTANCE_RE = re.compile(r"\s*-\s*(\d+(?:\.\d+)?)\s*km\s*$")
 
 _STYLE = """
 :root {
@@ -89,16 +103,18 @@ td.num { font-variant-numeric: tabular-nums; }
 td.name { font-weight: 600; }
 td.name a { color: var(--accent); text-decoration: none; }
 td.name a:hover { text-decoration: underline; }
-td.wide { white-space: normal; min-width: 20rem; }
+td.wide { white-space: normal; min-width: 11rem; width: 100%; }
+td.dist { text-align: right; white-space: nowrap; }
+th:last-child { text-align: right; }
 tbody tr.hidden { display: none; }
 footer { margin-top: 1rem; color: var(--muted); font-size: .8rem; }
 
 @media print {
-  @page { size: A4 landscape; margin: 10mm; }
+  @page { size: A4 portrait; margin: 12mm; }
   body { padding: 0; font-size: 9pt; background: #fff; color: #000; }
   .controls, footer { display: none; }
   .scroll { overflow: visible; border: 0; }
-  table { font-size: 7.5pt; }
+  table { font-size: 8.5pt; }
   thead { display: table-header-group; }   /* repeat the header on every page */
   tr { page-break-inside: avoid; }
   th { position: static; color: #000; }
@@ -148,9 +164,31 @@ def _cell_class(column: str) -> str:
         return "name"
     if column == "Comment":
         return "wide"
-    if column in _NARROW_COLUMNS or column in ("Frequency", "Offset"):
-        return "num"
-    return ""
+    if column == _DISTANCE_COLUMN:
+        return "num dist"
+    return "num"
+
+
+def _split_distance(row: dict[str, str]) -> tuple[str, str]:
+    """
+    Return "(comment without its distance, distance for its own column)".
+
+    Prefers the value the pipeline attached to the row; failing that —
+    rendering straight from a CSV — reads it back off the comment, which
+    is where the pipeline also writes it for the radio to show.
+    """
+    comment = (row.get("Comment") or "").strip()
+    match = COMMENT_DISTANCE_RE.search(comment)
+    if match is not None:
+        comment = comment[: match.start()].rstrip()
+
+    raw = (row.get(DISTANCE_FIELD) or "").strip() or (match.group(1) if match else "")
+    if not raw:
+        return comment, ""
+    try:
+        return comment, f"{float(raw):.0f} km"
+    except ValueError:
+        return comment, ""
 
 
 def _cell_html(column: str, value: str, eucla_id: str) -> str:
@@ -170,20 +208,23 @@ def _cell_html(column: str, value: str, eucla_id: str) -> str:
     )
 
 
-def build_html(rows: list[dict[str, str]], fieldnames: list[str], source: str) -> str:
+def build_html(rows: list[dict[str, str]], source: str) -> str:
     """Render the rows as one self-contained HTML document."""
-    head = "".join(f"<th>{html.escape(name)}</th>" for name in fieldnames)
+    columns = _DISPLAY_COLUMNS + (_DISTANCE_COLUMN,)
+    head = "".join(f"<th>{html.escape(name)}</th>" for name in columns)
 
     body = []
     for row in rows:
-        # A lowercased copy of the whole row backs the filter box, so
+        comment, distance = _split_distance(row)
+        shown = {**row, "Comment": comment, _DISTANCE_COLUMN: distance}
+        # A lowercased copy of every shown field backs the filter box, so
         # typing a callsign, a locator or a tone all narrow the table.
-        haystack = " ".join((row.get(name) or "") for name in fieldnames).lower()
+        haystack = " ".join((shown.get(name) or "") for name in columns).lower()
         eucla_id = row.get(ANACOM_ID_FIELD) or ""
         cells = "".join(
             f'<td class="{_cell_class(name)}">'
-            f'{_cell_html(name, row.get(name) or "", eucla_id)}</td>'
-            for name in fieldnames
+            f'{_cell_html(name, shown.get(name) or "", eucla_id)}</td>'
+            for name in columns
         )
         body.append(f'<tr data-search="{html.escape(haystack, quote=True)}">{cells}</tr>')
 
@@ -216,7 +257,7 @@ def build_html(rows: list[dict[str, str]], fieldnames: list[str], source: str) -
   </table>
 </div>
 
-<footer>Print or save as PDF with File → Print — the table prints landscape with the header repeated on each page.</footer>
+<footer>Print or save as PDF with File → Print — the table prints portrait with the header repeated on each page.</footer>
 <script>{_SCRIPT}</script>
 </body>
 </html>
@@ -228,7 +269,7 @@ def main() -> None:
     source = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_INPUT
     target = sys.argv[2] if len(sys.argv) > 2 else _DEFAULT_OUTPUT
     try:
-        rows, fieldnames = _read_rows(source)
+        rows, _ = _read_rows(source)
     except FileNotFoundError:
         print(f"[!!] No such file: {source}. Run HAM_Repeaters_CHIRP.py first.")
         sys.exit(1)
@@ -241,7 +282,7 @@ def main() -> None:
         sys.exit(1)
 
     with open(target, "w", encoding="utf-8") as f:
-        f.write(build_html(rows, fieldnames, source))
+        f.write(build_html(rows, source))
     print(f"[OK] Wrote {len(rows)} channels to {target}")
 
 
