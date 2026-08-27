@@ -69,8 +69,11 @@ being a registry, not a bug in this script.
   not reject them with "out of supported ranges" errors.
 - **Deduplicate** — by `(Name, Frequency)`, comparing the frequency as a
   float so `51.9900` and `51.990000` collapse into one entry.
-- **Sort** — by `Frequency` ascending.
+- **Sort** — by `Frequency` ascending, with repeaters sharing a
+  frequency ordered nearest first when a home position is set.
 - **Renumber** — rewrites `Location` as a contiguous sequence starting at 1.
+- **Distance** — with `HOME_CENTER_LAT` / `HOME_CENTER_LON` set, appends
+  each repeater's distance from you to its `Comment` (see below).
 - **Refuses to guess** — if the scrape returns implausibly few rows, the
   script fails instead of overwriting a good CSV with a broken one.
 
@@ -81,7 +84,8 @@ being a registry, not a bug in this script.
 - Python **3.10+** (uses builtin generics like `list[str]` / `set[tuple[...]]`
   and the PEP 604 `X | None` union syntax)
 - No third-party dependencies — only the Python standard library
-  (`csv`, `html`, `http.client`, `http.cookiejar`, `re`, `urllib`)
+  (`csv`, `html`, `http.client`, `http.cookiejar`, `math`, `os`, `re`,
+  `urllib`)
 - Outbound HTTPS access to `www.anacom.pt`.
 
 ---
@@ -109,8 +113,15 @@ Python 3.10+ interpreter.
 ```
 HAM_Repeaters_CHIRP/
 ├── HAM_Repeaters_CHIRP.py   # the scrape + build script
-└── chirp.csv                # generated output (after running the script)
+├── .env.example             # template for your station position
+├── .env                     # your position (gitignored, you create this)
+└── chirp.csv                # generated output (gitignored)
 ```
+
+`chirp.csv` is not tracked. Once `HOME_CENTER_LAT` / `HOME_CENTER_LON` are
+set, every row carries its distance from you — and the nearest repeater
+reads `0 km`, which gives your QTH away to anyone who reads the file. Run
+the script to generate your own.
 
 The output always uses the canonical CHIRP header:
 `Location,Name,Frequency,Duplex,Offset,Tone,rToneFreq,cToneFreq,DtcsCode,DtcsPolarity,Mode,TStep,Skip,Comment,URCALL,RPT1CALL,RPT2CALL,DVCODE`.
@@ -167,6 +178,49 @@ build_chirp_csv(output_file="/path/to/repeaters.csv")
 
 ---
 
+## Distance from your station
+
+Set your position and every channel's `Comment` gains its distance, while
+repeaters sharing a frequency are ordered nearest first. The frequency
+order itself does not change.
+
+```
+1,CQ0VCSC,145.6000,...,IM58GQ - RV48 - REP - 12 km
+2,CQ0VSE,145.6000,...,IN60EH - RV48 - ARBA - 187 km
+```
+
+Copy the template and fill it in — `.env` is gitignored, so your QTH
+never reaches the repository:
+
+```bash
+cp .env.example .env
+```
+
+```
+HOME_CENTER_LAT=38.7223
+HOME_CENTER_LON=-9.1393
+```
+
+Decimal degrees. South latitudes and west longitudes are negative, so
+`HOME_CENTER_LON` is negative anywhere in Portugal.
+
+Real environment variables take precedence over the file, which is handy
+for a one-off run from somewhere else:
+
+```bash
+HOME_CENTER_LAT=41.1579 HOME_CENTER_LON=-8.6291 python3 HAM_Repeaters_CHIRP.py
+```
+
+Leave them unset and distances are skipped entirely — the output is
+exactly what it would have been otherwise. Anything wrong — only one of
+the pair, a non-number, a value out of range — prints a warning and
+disables distances rather than stopping the run.
+
+Distances are great-circle (line of sight over the ground), not travel
+distance, which is the right measure for deciding which repeater to try.
+
+---
+
 ## Processing pipeline
 
 | Step | What it does |
@@ -178,7 +232,7 @@ build_chirp_csv(output_file="/path/to/repeaters.csv")
 | 5. Adapt | Builds CHIRP rows; drops stations with no tone or no frequency pair |
 | 6. Band filter | Drops rows outside `65-108`, `136-174`, `400-480 MHz` |
 | 7. Deduplicate | By `(Name, float(Frequency))`, first occurrence wins |
-| 8. Sort | By `Frequency` ascending |
+| 8. Sort | By `Frequency` ascending, then by distance when a home position is set |
 | 9. Renumber | Rewrites `Location` as a contiguous index starting at 1 |
 | 10. Write | Writes the CSV to `output_file` |
 
@@ -202,6 +256,11 @@ build_chirp_csv(output_file="/path/to/repeaters.csv")
 | `_filter_by_supported_frequency(rows)` | Drop out-of-band rows |
 | `_dedupe_by_name_frequency(rows)` | First-occurrence-wins dedup |
 | `_renumber_locations(rows)` | Rewrite `Location` as a contiguous index starting at 1 |
+| `_read_env_file(path)` | Parse a minimal `KEY=VALUE` env file |
+| `_home_coordinates()` | Read `HOME_CENTER_LAT` / `HOME_CENTER_LON`, or `None` |
+| `_parse_dms(text)` | ANACOM's `40º 46' 43",100 N` to signed decimal degrees |
+| `_distance_km(origin, lat, lon)` | Great-circle distance between two points |
+| `_row_distance(row)` | A row's distance in km, or infinity if unknown |
 | `_write_csv(output_file, rows)` | `DictWriter` with `restval=""`, `extrasaction="ignore"` |
 
 Module-level constants `_ANACOM_FORM_URL`, `_ANACOM_RESULTS_URL`,

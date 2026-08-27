@@ -27,6 +27,8 @@ import csv
 import html
 import http.client
 import http.cookiejar
+import math
+import os
 import re
 import sys
 import time
@@ -99,6 +101,28 @@ _CSV_LINE_TERMINATOR = "\n"
 # 12.50 kHz matches the Portuguese narrowband channel plan. CHIRP refuses
 # to parse a blank TStep.
 _DEFAULT_TSTEP = "12.50"
+
+# Your station's position, in decimal degrees, read from the environment
+# or from the .env file beside this script (see .env.example). South and
+# west are negative. Set both and each channel's Comment ends with its
+# distance, with repeaters sharing a frequency ordered nearest first.
+# Leave them unset and distances are skipped. .env is gitignored, so your
+# QTH stays out of the repository.
+_HOME_LAT_VAR = "HOME_CENTER_LAT"
+_HOME_LON_VAR = "HOME_CENTER_LON"
+_ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+# Mean Earth radius, km — the haversine distances are great-circle, so
+# they are line-of-sight ground distance, not travel distance.
+_EARTH_RADIUS_KM = 6371.0
+
+# ANACOM writes coordinates as DMS with the fractional seconds after the
+# closing quote: 40º 46' 43",100 N
+_DMS_RE = re.compile(r"(\d+)\D+(\d+)'\s*(\d+)\"(?:,(\d+))?\s*([NSEWnsew])")
+
+# Key used to carry a row's distance through sorting. It is not a CHIRP
+# column: the writer's extrasaction="ignore" keeps it out of the file.
+_DISTANCE_KEY = "_distance_km"
 
 # Bands the radio accepts, MHz, inclusive. Anything else is dropped, since
 # CHIRP rejects it with "Frequency X is out of supported ranges ...".
@@ -222,17 +246,119 @@ def _fetch_detail(opener: urllib.request.OpenerDirector, eucla_id: str) -> dict[
 
 
 # ---------------------------------------------------------------------
+# Position and distance
+# ---------------------------------------------------------------------
+
+
+def _parse_dms(text: str) -> float | None:
+    """
+    Parse ANACOM's "40º 46' 43\",100 N" into signed decimal degrees.
+
+    South and West come back negative. Returns None if the text does not
+    hold a coordinate.
+    """
+    match = _DMS_RE.search(text or "")
+    if match is None:
+        return None
+    degrees, minutes, seconds, fraction, hemisphere = match.groups()
+    value = int(degrees) + int(minutes) / 60 + float(f"{seconds}.{fraction or 0}") / 3600
+    return -value if hemisphere.upper() in ("S", "W") else value
+
+
+def _read_env_file(path: str) -> dict[str, str]:
+    """
+    Parse a minimal "KEY=VALUE" env file, ignoring blanks and # comments.
+
+    Returns an empty mapping when the file does not exist — having no .env
+    is the normal case, not an error.
+    """
+    values: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                # Strip one layer of matching quotes, if present.
+                values[key.strip()] = value.strip().strip("\"'")
+    except OSError:
+        pass
+    return values
+
+
+def _home_coordinates() -> tuple[float, float] | None:
+    """
+    Read the home position into "(latitude, longitude)", or None if unset.
+
+    HOME_CENTER_LAT and HOME_CENTER_LON come from the environment first,
+    then from the .env file, so a one-off run can override the file:
+
+        HOME_CENTER_LAT=41.15 HOME_CENTER_LON=-8.61 python3 HAM_Repeaters_CHIRP.py
+
+    Anything wrong — only one of the pair, a non-number, an out-of-range
+    value — is reported and treated as unset, so a typo costs the
+    distances rather than the whole run.
+    """
+    from_file = _read_env_file(_ENV_FILE)
+
+    def setting(name: str) -> str:
+        return (os.environ.get(name) or from_file.get(name, "")).strip()
+
+    lat_text, lon_text = setting(_HOME_LAT_VAR), setting(_HOME_LON_VAR)
+    if not lat_text and not lon_text:
+        return None
+    if not lat_text or not lon_text:
+        print(f"[!!] Set both {_HOME_LAT_VAR} and {_HOME_LON_VAR} — distances disabled.")
+        return None
+
+    try:
+        latitude, longitude = float(lat_text), float(lon_text)
+    except ValueError:
+        print(
+            f"[!!] {_HOME_LAT_VAR}={lat_text!r} {_HOME_LON_VAR}={lon_text!r} "
+            "are not decimal degrees — distances disabled."
+        )
+        return None
+
+    if not (-90 <= latitude <= 90) or not (-180 <= longitude <= 180):
+        print(
+            f"[!!] {_HOME_LAT_VAR}={latitude} {_HOME_LON_VAR}={longitude} is out of "
+            "range (lat -90..90, lon -180..180) — distances disabled."
+        )
+        return None
+
+    return latitude, longitude
+
+
+def _distance_km(origin: tuple[float, float], lat: float, lon: float) -> float:
+    """Great-circle distance in km between "origin" and "(lat, lon)"."""
+    lat1, lon1 = math.radians(origin[0]), math.radians(origin[1])
+    lat2, lon2 = math.radians(lat), math.radians(lon)
+    haversine = (
+            math.sin((lat2 - lat1) / 2) ** 2
+            + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    )
+    return 2 * _EARTH_RADIUS_KM * math.asin(math.sqrt(haversine))
+
+
+# ---------------------------------------------------------------------
 # CHIRP row construction
 # ---------------------------------------------------------------------
 
 
-def _to_chirp_row(record: dict, detail: dict[str, str]) -> Row | None:
+def _to_chirp_row(
+        record: dict, detail: dict[str, str], home: tuple[float, float] | None
+) -> Row | None:
     """
     Combine a results row and its detail page into a CHIRP row.
 
     Returns None when the station cannot be programmed as an analogue
     channel: no licensed frequency pair, or no CTCSS tone. ANACOM does not
     publish the channel bandwidth in this view, so Mode is always FM.
+
+    When "home" is set, the station's distance is appended to the comment
+    and stashed under _DISTANCE_KEY for the sort.
     """
     # The repeater's emission is what the radio receives, its reception
     # what the radio transmits.
@@ -260,6 +386,16 @@ def _to_chirp_row(record: dict, detail: dict[str, str]) -> Row | None:
     else:
         duplex = ""
 
+    # Distance from home, when a position is configured. Stations whose
+    # coordinates will not parse keep a distance of None and sort last
+    # within their frequency rather than pretending to be at zero km.
+    distance: float | None = None
+    if home is not None:
+        latitude = _parse_dms(detail.get("latitude", ""))
+        longitude = _parse_dms(detail.get("longitude", ""))
+        if latitude is not None and longitude is not None:
+            distance = _distance_km(home, latitude, longitude)
+
     # "Local da Estação" holds the QTH locator. Channel designator and
     # license holder round out something readable in CHIRP's comment column.
     comment = " - ".join(
@@ -267,10 +403,14 @@ def _to_chirp_row(record: dict, detail: dict[str, str]) -> Row | None:
             detail.get("local da estação", ""),
             detail.get("canal", ""),
             record["holder"],
+            f"{distance:.0f} km" if distance is not None else "",
         ) if bit and bit != "-"
     )
 
     return {
+        # Stored as text to keep the row a plain dict[str, str]; the writer
+        # drops it, and _row_distance reads it back for the sort.
+        _DISTANCE_KEY: "" if distance is None else f"{distance:.3f}",
         "Location": "",
         "Name": record["callsign"],
         "Frequency": f"{out_f:.4f}",
@@ -299,6 +439,10 @@ def _download_repeaters() -> list[Row]:
     Raises RuntimeError if the search returns implausibly few rows, rather
     than reporting an empty registry and overwriting a good CSV.
     """
+    home = _home_coordinates()
+    if home is not None:
+        print(f"[..] Measuring distances from {home[0]:.4f}, {home[1]:.4f}")
+
     opener, session_id = _open_session()
 
     print("[..] Submitting the search")
@@ -321,7 +465,7 @@ def _download_repeaters() -> list[Row]:
     for index, record in enumerate(records, start=1):
         # One request per station: the tone lives only on the detail page.
         detail = _fetch_detail(opener, record["eucla_id"])
-        row = _to_chirp_row(record, detail)
+        row = _to_chirp_row(record, detail, home)
         if row is None:
             skipped += 1
         else:
@@ -376,6 +520,19 @@ def _dedupe_by_name_frequency(rows: list[Row]) -> list[Row]:
     return deduped
 
 
+def _row_distance(row: Row) -> float:
+    """
+    Return the row's distance from home in km, or infinity if unknown.
+
+    Unknown distances sort last within their frequency, so a station with
+    unreadable coordinates never displaces a real neighbor.
+    """
+    try:
+        return float(row.get(_DISTANCE_KEY) or "inf")
+    except ValueError:
+        return float("inf")
+
+
 def _renumber_locations(rows: list[Row]) -> None:
     """Rewrite "Location" as a contiguous index starting at 1, in place."""
     for index, row in enumerate(rows, start=1):
@@ -413,7 +570,8 @@ def build_chirp_csv(output_file: str) -> None:
     rows = _download_repeaters()
     rows = _filter_by_supported_frequency(rows)
     rows = _dedupe_by_name_frequency(rows)
-    rows.sort(key=_row_frequency)
+    # Frequency order, with repeaters sharing a frequency nearest first.
+    rows.sort(key=lambda row: (_row_frequency(row), _row_distance(row)))
     _renumber_locations(rows)
 
     if not rows:
