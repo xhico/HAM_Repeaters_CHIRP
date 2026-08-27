@@ -9,7 +9,7 @@ Four feeds are queried per run, in this order:
 
     1. https://repetidores.pt/json_vhf.php          (DataTables JSON)
     2. https://repetidores.pt/json_uhf.php          (DataTables JSON)
-    3. https://portaldoradioamador.pt/...           (CHIRP CSV)
+    3. https://portaldoradioamador.pt/api/v1/...    (Django REST JSON)
     4. https://api.radioamador.info/api/repeaters   (PayloadCMS JSON)
 
 Order matters: dedup is first-occurrence-wins, so earlier feeds take
@@ -22,7 +22,6 @@ only fails outright when every feed is unusable.
 # Standard library only, so this runs on a stock Python 3.10+ interpreter.
 import csv
 import http.client
-import io
 import json
 import urllib.error
 import urllib.request
@@ -33,14 +32,18 @@ from typing import TypeAlias, cast
 # even numeric ones ("145.6000", "0.600000").
 Row: TypeAlias = dict[str, str]
 
-# repetidores.pt also serves a ready-made CHIRP CSV at /gerarcsv.php, but
-# these two JSON feeds carry the same 87 repeaters plus bandwidth, QTH
-# locator, ERP and owner. Its json_dmr/json_dstar feeds are deliberately
-# skipped: digital-only repeaters can't be programmed as analogue FM.
-# ?limit=500 defeats the radioamador API's default page size of 10.
+# Both Portuguese sites also publish ready-made CHIRP CSV exports, but the
+# APIs their own front-ends use carry more: repetidores.pt's two JSON feeds
+# add bandwidth, QTH locator, ERP and owner over /gerarcsv.php, and
+# portaldoradioamador.pt's fact-repeater endpoint returns ~20 more
+# programmable channels than its CHIRP export, with the bandwidth the
+# export flattens to FM and without the negative offsets it emits for
+# reverse repeaters. The repetidores json_dmr/json_dstar feeds are
+# deliberately skipped: digital-only repeaters can't be programmed as
+# analogue FM. ?limit=500 defeats both APIs' small default page sizes.
 _REPETIDORES_PT_VHF_URL = "https://repetidores.pt/json_vhf.php"
 _REPETIDORES_PT_UHF_URL = "https://repetidores.pt/json_uhf.php"
-_PORTALDORADIOAMADOR_PT_URL = "https://portaldoradioamador.pt/backend/repeaters/export/chirp/"
+_PORTALDORADIOAMADOR_PT_URL = "https://portaldoradioamador.pt/api/v1/repeaters/fact-repeater/?limit=500"
 _RADIOAMADOR_INFO_URL = "https://api.radioamador.info/api/repeaters?limit=500"
 
 # Every upstream 403s the default "Python-urllib/X.Y" User-Agent.
@@ -54,7 +57,6 @@ _SOURCE_ERRORS: tuple[type[Exception], ...] = (
     http.client.HTTPException,  # truncated bodies; NOT an OSError
     json.JSONDecodeError,  # error page served where JSON was expected
     UnicodeDecodeError,  # body isn't UTF-8
-    csv.Error,  # malformed CSV
 )
 
 _CHIRP_HEADER: tuple[str, ...] = (
@@ -139,13 +141,63 @@ def _chirp_row(name: str, out_f: float, in_f: float, tone: str, mode: str, comme
     }
 
 
-def _fetch_chirp_csv(url: str) -> tuple[list[Row], list[str]]:
-    """Download a CHIRP-format CSV and return "(rows, fieldnames)"."""
-    reader = csv.DictReader(io.StringIO(_http_get(url).decode("utf-8")))
-    fieldnames = list(reader.fieldnames or [])
-    rows = list(reader)
-    print(f"[..] Fetched {len(rows)} rows from {url}")
-    return rows, fieldnames
+def _portaldoradioamador_entry_to_row(entry: dict) -> Row | None:
+    """
+    Map one portaldoradioamador.pt "fact-repeater" record to a CHIRP row.
+
+    The record is a join of per-mode sub-objects; only "info_rf" (the
+    frequency pair) and "info_fm" (analogue settings) matter here. Returns
+    None for anything that can't be programmed as an analogue channel:
+    digital-only repeaters have no info_fm, and a missing CTCSS tone would
+    be dropped by _normalize_row anyway.
+    """
+    rf = entry.get("info_rf") or {}
+    fm = entry.get("info_fm") or {}
+
+    # Band "X" marks a cross-band repeater — it listens on one band and
+    # repeats on another, so its pair is 286-409 MHz apart and cannot be
+    # expressed as a CHIRP offset. The site's own CHIRP export omits these
+    # for the same reason.
+    if str(rf.get("band") or "").strip().upper() == "X":
+        return None
+
+    tone_raw = fm.get("ctcss")
+    if not tone_raw:
+        return None
+    try:
+        # tx_mhz is what the repeater transmits (what the radio receives);
+        # rx_mhz is what it listens on (what the radio transmits).
+        out_f = float(rf["tx_mhz"])
+        in_f = float(rf["rx_mhz"])
+        tone = f"{float(tone_raw):.1f}"
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    # The API reports bandwidth as NFM (11K0F3E) or WFM (16K0F3E). CHIRP's
+    # own "WFM" means broadcast FM, so wide analogue voice maps to plain FM.
+    mode = "NFM" if str(fm.get("bandwidth") or "").strip().upper() == "NFM" else "FM"
+
+    location = entry.get("info_location") or {}
+    holder = entry.get("info_holder") or {}
+    comment = " - ".join(
+        str(bit).strip()
+        for bit in (location.get("place"), location.get("qth_loc"), holder.get("abrv"))
+        if bit and str(bit).strip()
+    )
+
+    return _chirp_row(str(entry.get("callsign") or "").strip(), out_f, in_f, tone, mode, comment)
+
+
+def _fetch_portaldoradioamador_json(url: str) -> tuple[list[Row], list[str]]:
+    """Download the portaldoradioamador.pt API and adapt it to CHIRP rows."""
+    payload = json.loads(_http_get(url).decode("utf-8"))
+    rows: list[Row] = []
+    for entry in payload.get("results", []):
+        row: Row | None = _portaldoradioamador_entry_to_row(entry)
+        if row is not None:
+            rows.append(row)
+    print(f"[..] Fetched {len(rows)} FM rows from {url}")
+    return rows, list(_CHIRP_HEADER)
 
 
 def _repetidores_entry_to_row(entry: list) -> Row | None:
@@ -284,7 +336,7 @@ def _download_and_merge() -> tuple[list[Row], list[str]]:
     sources: tuple[tuple[Callable[[str], tuple[list[Row], list[str]]], str], ...] = (
         (_fetch_repetidores_json, _REPETIDORES_PT_VHF_URL),
         (_fetch_repetidores_json, _REPETIDORES_PT_UHF_URL),
-        (_fetch_chirp_csv, _PORTALDORADIOAMADOR_PT_URL),
+        (_fetch_portaldoradioamador_json, _PORTALDORADIOAMADOR_PT_URL),
         (_fetch_radioamador_json, _RADIOAMADOR_INFO_URL),
     )
 

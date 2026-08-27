@@ -24,18 +24,26 @@ output CSV.
 |------------------------------------------------------------------|-----------------|--------------------------------------------------------------------|
 | `https://repetidores.pt/json_vhf.php`                            | DataTables JSON | Adapted into CHIRP rows; tone-enabled repeaters only.              |
 | `https://repetidores.pt/json_uhf.php`                            | DataTables JSON | Same feed for UHF.                                                 |
-| `https://portaldoradioamador.pt/backend/repeaters/export/chirp/` | CHIRP CSV       | Consumed as-is.                                                    |
+| `https://portaldoradioamador.pt/api/v1/repeaters/fact-repeater/` | Django REST JSON | Adapted into CHIRP rows; analogue FM with a CTCSS tone only.       |
 | `https://api.radioamador.info/api/repeaters?limit=500`           | PayloadCMS JSON | Adapted into CHIRP rows: FM-mode entries with a CTCSS tone only.   |
 
 Order matters — deduplication is first-occurrence-wins, so a feed listed
 earlier takes precedence when several publish the same channel.
 
-repetidores.pt also serves a ready-made CHIRP CSV at `/gerarcsv.php`,
-but the two JSON feeds above — the ones its own results table is built
-from — carry the same repeaters *plus* the channel bandwidth, QTH
-locator and owning association that the CSV export drops. Its
-`json_dmr.php` / `json_dstar.php` feeds are deliberately not merged:
-digital-only repeaters cannot be programmed as analogue FM channels.
+Both Portuguese sites also publish ready-made CHIRP CSV exports, but the
+APIs their own front-ends use carry more. repetidores.pt's two JSON feeds
+add channel bandwidth, QTH locator, ERP and owner over `/gerarcsv.php`.
+portaldoradioamador.pt's `fact-repeater` endpoint reports the bandwidth
+its CHIRP export flattens to `FM`, and avoids the malformed rows that
+export emits for reverse and simplex repeaters (a negative `Offset`, and
+a `-` duplex on a simplex channel).
+
+Two categories are deliberately not merged, because neither can be
+programmed as an analogue duplex channel: repetidores.pt's
+`json_dmr.php` / `json_dstar.php` feeds (digital-only repeaters), and
+portaldoradioamador.pt records marked `band: "X"` (cross-band repeaters,
+whose input and output are 286-409 MHz apart). The sites' own CHIRP
+exports omit both for the same reason.
 
 Every upstream rejects the default `Python-urllib` User-Agent with HTTP
 403, so a generic browser-style UA is sent on every request.
@@ -54,11 +62,11 @@ run, not the whole output. The script only fails outright, with
 
 - **Download** — fetches every feed over HTTPS in memory; no files
   written to disk besides the final merged CSV.
-- **Adapt** — maps the JSON feeds into CHIRP rows: output/input
-  frequency → `Frequency`/`Duplex`/`Offset`, CTCSS tone copied into
-  `rToneFreq`/`cToneFreq`, and — for repetidores.pt, which reports
-  channel bandwidth — `Mode=NFM` for narrow (12.5 kHz) channels,
-  `Mode=FM` for wide ones.
+- **Adapt** — maps every feed into CHIRP rows: output/input frequency →
+  `Frequency`/`Duplex`/`Offset`, CTCSS tone copied into
+  `rToneFreq`/`cToneFreq`, and `Mode=NFM` for narrow (12.5 kHz) channels
+  against `Mode=FM` for wide ones, from the bandwidth both Portuguese
+  APIs report.
 - **Filter** — drops rows that do not carry a CTCSS tone, since this
   workflow targets tone-enabled analogue repeaters only.
 - **Normalize** — keeps `rToneFreq` and `cToneFreq` consistent, fills
@@ -83,7 +91,7 @@ run, not the whole output. The script only fails outright, with
 - Python **3.10+** (uses builtin generics like `list[str]` / `set[tuple[...]]`
   and the PEP 604 `X | None` union syntax)
 - No third-party dependencies — only the Python standard library
-  (`csv`, `http.client`, `io`, `json`, `urllib`)
+  (`csv`, `http.client`, `json`, `urllib`)
 - Outbound HTTPS access to the source hosts listed above.
 
 ---
@@ -142,19 +150,25 @@ Sample output:
 ```
 [..] Fetched 29 rows from https://repetidores.pt/json_vhf.php
 [..] Fetched 58 rows from https://repetidores.pt/json_uhf.php
-[..] Fetched 143 rows from https://portaldoradioamador.pt/backend/repeaters/export/chirp/
+[..] Fetched 148 FM rows from https://portaldoradioamador.pt/api/v1/repeaters/fact-repeater/?limit=500
 [..] Fetched 137 FM rows from https://api.radioamador.info/api/repeaters?limit=500
-[..] Removed 2 row(s) outside supported ranges 65.0-108.0MHz, 136.0-174.0MHz, 400.0-480.0MHz
+[..] Removed 7 row(s) outside supported ranges 65.0-108.0MHz, 136.0-174.0MHz, 400.0-480.0MHz
 [..] Removed 201 duplicate row(s) by (Name, Frequency)
 [OK] Merged 163 rows into chirp.csv
 ```
 
-A run where one feed is unavailable looks like this — note it still
-produces a usable file:
+Row counts move as the upstreams are edited, so treat those as
+illustrative. A run where one feed is unavailable looks like this — note
+it still produces a usable file:
 
 ```
+[..] Fetched 29 rows from https://repetidores.pt/json_vhf.php
+[..] Fetched 58 rows from https://repetidores.pt/json_uhf.php
+[..] Fetched 148 FM rows from https://portaldoradioamador.pt/api/v1/repeaters/fact-repeater/?limit=500
 [!!] Skipping https://api.radioamador.info/api/repeaters?limit=500: HTTPError: HTTP Error 530: <none>
 [!!] 1 of 4 sources unavailable — merging the rest.
+[..] Removed 7 row(s) outside supported ranges 65.0-108.0MHz, 136.0-174.0MHz, 400.0-480.0MHz
+[..] Removed 84 duplicate row(s) by (Name, Frequency)
 [OK] Merged 144 rows into chirp.csv
 ```
 
@@ -189,7 +203,7 @@ The script applies the following transformations, in order:
 | Step              | What it does                                                                 |
 |-------------------|------------------------------------------------------------------------------|
 | 1. Download       | Fetches each feed over HTTPS in memory; a failing feed is logged and skipped |
-| 2. Adapt          | Maps the JSON feeds into CHIRP rows (tone-enabled, analogue-capable only)    |
+| 2. Adapt          | Maps each feed into CHIRP rows (tone-enabled, analogue duplex only)          |
 | 3. Merge          | Concatenates rows; output header is the union of every source's fieldnames   |
 | 4. Filter         | Drops rows where `Tone` is empty                                             |
 | 5. Tone normalize | Mirrors `cToneFreq` → `rToneFreq`; forces `Tone = "Tone"`                     |
@@ -215,7 +229,8 @@ own if you want to reuse one stage in another tool.
 | `main()`                                        | Default `__main__` entry point (writes to `chirp.csv`)                     |
 | `_http_get(url)`                                | HTTPS GET with the browser-style User-Agent and request timeout            |
 | `_chirp_row(name, out_f, in_f, tone, mode, comment)` | Build a CHIRP row, deriving `Duplex`/`Offset` from the frequency pair |
-| `_fetch_chirp_csv(url)`                         | Download a CHIRP-format CSV; return `(rows, fieldnames)`                   |
+| `_portaldoradioamador_entry_to_row(entry)`      | Map one portaldoradioamador.pt `fact-repeater` record into a CHIRP row     |
+| `_fetch_portaldoradioamador_json(url)`          | Download the portaldoradioamador.pt API and adapt it into CHIRP rows       |
 | `_repetidores_entry_to_row(entry)`              | Map one repetidores.pt `aaData` array into a CHIRP row                     |
 | `_fetch_repetidores_json(url)`                  | Download a repetidores.pt `json_*.php` feed and adapt it                   |
 | `_radioamador_repeater_to_row(entry)`           | Map one radioamador.info API entry into a CHIRP row (FM + CTCSS only)      |
