@@ -1,0 +1,48 @@
+services:
+
+  ham-repeaters-chirp:
+    image: "ghcr.io/xhico/ham_repeaters_chirp:latest"
+    container_name: "ham-repeaters-chirp"
+    restart: "unless-stopped"
+    volumes:
+      # chirp.csv lives here and IS the state: the next run compares
+      # against it. On a throwaway volume every restart looks like a first
+      # run and nothing is ever reported as changed.
+      - "ham-repeaters-chirp-data:/data"
+    environment:
+
+      # ─── Schedule ───────────────────────────────────────────────────────────
+      # Hours between rebuilds, floored at 1. Each run is ~140 requests to
+      # anacom.pt over ~100s, and licenses change on a scale of months, so
+      # weekly is the sensible default. A small random buffer is added to
+      # every sleep so a fleet never lands on the same second.
+      CHIRP_INTERVAL_HOURS: "${CHIRP_INTERVAL_HOURS:-168}"
+      # Rebuild immediately on boot rather than waiting out the first interval.
+      CHIRP_RUN_ON_START: "${CHIRP_RUN_ON_START:-true}"
+
+      # ─── Your station ───────────────────────────────────────────────────────
+      # Decimal degrees; west is negative in Portugal. Set both and each
+      # channel gains its distance from you, with repeaters sharing a
+      # frequency ordered nearest first. Unset, distances are skipped.
+      HOME_CENTER_LAT: "${HOME_CENTER_LAT:-}"
+      HOME_CENTER_LON: "${HOME_CENTER_LON:-}"
+
+      # ─── Email ──────────────────────────────────────────────────────────────
+      # Without EMAIL_TO and SMTP_HOST the service still runs and still
+      # rebuilds — changes are logged instead of mailed.
+      EMAIL_TO: "${EMAIL_TO:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USERNAME: "${SMTP_USERNAME:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+      SMTP_STARTTLS: "${SMTP_STARTTLS:-true}"
+      SMTP_SSL: "${SMTP_SSL:-false}"
+      SMTP_TIMEOUT: "${SMTP_TIMEOUT:-30}"
+
+      # ─── Runtime ────────────────────────────────────────────────────────────
+      # Must stay on the mounted volume for change detection to work.
+      CHIRP_OUTPUT_DIR: "${CHIRP_OUTPUT_DIR:-/data}"
+
+volumes:
+  ham-repeaters-chirp-data:

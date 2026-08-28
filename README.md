@@ -118,8 +118,12 @@ Python 3.10+ interpreter.
 HAM_Repeaters_CHIRP/
 ├── HAM_Repeaters_CHIRP.py   # the scrape + build script
 ├── chirp_to_html.py         # renders the CSV as a browser page
-├── .env.example             # template for your station position
-├── .env                     # your position (gitignored, you create this)
+├── service.py               # timer loop + email, the container entry point
+├── mailer.py                # SMTP delivery for the change report
+├── Dockerfile               # image definition
+├── docker-compose.yaml      # ready-to-run service
+├── .env.example             # template for your settings
+├── .env                     # your settings (gitignored, you create this)
 ├── chirp.csv                # generated output (gitignored)
 └── chirp.html               # generated browser view (gitignored)
 ```
@@ -183,6 +187,58 @@ from HAM_Repeaters_CHIRP import build_chirp_csv
 
 build_chirp_csv(output_file="/path/to/repeaters.csv")
 ```
+
+---
+
+## Running as a service
+
+The repository also ships as a Docker image that rebuilds the list on a
+timer and emails you when ANACOM's registry actually changes. Published
+to GHCR on every push to `main`:
+
+```bash
+docker compose up -d
+```
+
+```yaml
+services:
+  ham-repeaters-chirp:
+    image: "ghcr.io/xhico/ham_repeaters_chirp:latest"
+    restart: "unless-stopped"
+    volumes:
+      - "ham-repeaters-chirp-data:/data"
+    environment:
+      CHIRP_INTERVAL_HOURS: "168"
+      HOME_CENTER_LAT: "38.7223"
+      HOME_CENTER_LON: "-9.1393"
+      EMAIL_TO: "you@example.com"
+      SMTP_HOST: "smtp.example.com"
+      SMTP_USERNAME: "you@example.com"
+      SMTP_PASSWORD: "…"
+```
+
+See [`.env.example`](.env.example) for every setting.
+
+**The volume matters.** `chirp.csv` on `/data` *is* the state — the next
+run compares against it. On a throwaway path every restart looks like a
+first run and nothing is ever reported as changed.
+
+**Weekly by default.** Each cycle is ~140 requests to anacom.pt over
+~100 seconds, and licenses change on a scale of months. A small random
+buffer is added to every sleep so a fleet of these never lands on ANACOM
+at the same instant. `CHIRP_INTERVAL_HOURS` is a floor, minimum 1.
+
+**Mail only on change.** Nothing is sent when the list is unchanged, and
+nothing on the very first run — a fresh container adopting 139 repeaters
+is not news. Recipients are sent as Bcc, so no one sees the others. With
+`EMAIL_TO` or `SMTP_HOST` unset the service still runs and still
+rebuilds; changes are logged instead. SMTP is probed once at startup, so
+bad credentials surface immediately rather than a month later when the
+first change lands.
+
+A failed cycle retries in 30 minutes rather than sleeping the full
+interval, and the container reports unhealthy once the CSV stops being
+refreshed — a stalled loop is exactly the failure that silence hides.
 
 ---
 

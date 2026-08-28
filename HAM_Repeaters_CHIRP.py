@@ -35,6 +35,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from typing import TypeAlias
 
 import chirp_to_html  # sibling module: renders the browser view
@@ -113,7 +114,7 @@ _DEFAULT_TSTEP = "12.50"
 # QTH stays out of the repository.
 _HOME_LAT_VAR = "HOME_CENTER_LAT"
 _HOME_LON_VAR = "HOME_CENTER_LON"
-_ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
 # Mean Earth radius, km — the haversine distances are great-circle, so
 # they are line-of-sight ground distance, not travel distance.
@@ -268,7 +269,7 @@ def _parse_dms(text: str) -> float | None:
     return -value if hemisphere.upper() in ("S", "W") else value
 
 
-def _read_env_file(path: str) -> dict[str, str]:
+def read_env_file(path: str) -> dict[str, str]:
     """
     Parse a minimal "KEY=VALUE" env file, ignoring blanks and # comments.
 
@@ -303,7 +304,7 @@ def _home_coordinates() -> tuple[float, float] | None:
     value — is reported and treated as unset, so a typo costs the
     distances rather than the whole run.
     """
-    from_file = _read_env_file(_ENV_FILE)
+    from_file = read_env_file(ENV_FILE)
 
     def setting(name: str) -> str:
         return (os.environ.get(name) or from_file.get(name, "")).strip()
@@ -617,22 +618,58 @@ def _comparable(row: Row) -> dict[str, str]:
     return fields
 
 
-def _report_changes(previous: list[Row], current: list[Row]) -> None:
-    """
-    Print what changed since the last run, station by station.
+@dataclass(frozen=True)
+class Channel:
+    """One station in a change report: its callsign, frequency and comment."""
 
-    Silent about the ordinary case only in the sense that it says so
-    plainly: knowing nothing moved is as useful as knowing what did.
+    callsign: str
+    frequency: str
+    comment: str
+
+
+@dataclass(frozen=True)
+class Changes:
     """
+    What moved between two runs.
+
+    "first_run" separates "nothing changed" from "nothing to compare with",
+    which matters to anything deciding whether to notify: a fresh install
+    should not announce 139 new repeaters.
+    """
+
+    added: list[Channel]
+    removed: list[Channel]
+    modified: list[tuple[Channel, list[str]]]
+    total: int
+    first_run: bool
+
+    def __bool__(self) -> bool:
+        return bool(self.added or self.removed or self.modified)
+
+    @property
+    def summary(self) -> str:
+        """One line: "1 added, 0 removed, 2 modified"."""
+        return (
+            f"{len(self.added)} added, {len(self.removed)} removed, "
+            f"{len(self.modified)} modified"
+        )
+
+
+def _channel(key: str, row: Row) -> Channel:
+    """Describe one row for a change report."""
+    return Channel(key, (row.get("Frequency") or "").strip(), (row.get("Comment") or "").strip())
+
+
+def _describe_changes(previous: list[Row], current: list[Row]) -> Changes:
+    """Compare two runs and return what moved, station by station."""
     if not previous:
-        print("[..] No previous list to compare against — this is the first run.")
-        return
+        return Changes([], [], [], len(current), first_run=True)
 
     before, after = _index_by_channel(previous), _index_by_channel(current)
-    added = sorted(set(after) - set(before))
-    removed = sorted(set(before) - set(after))
+    added = [_channel(key, after[key]) for key in sorted(set(after) - set(before))]
+    removed = [_channel(key, before[key]) for key in sorted(set(before) - set(after))]
 
-    changed: list[tuple[str, list[str]]] = []
+    modified: list[tuple[Channel, list[str]]] = []
     for key in sorted(set(before) & set(after)):
         was, now = _comparable(before[key]), _comparable(after[key])
         fields = [
@@ -641,24 +678,32 @@ def _report_changes(previous: list[Row], current: list[Row]) -> None:
             if was[name] != now[name]
         ]
         if fields:
-            changed.append((key, fields))
+            modified.append((_channel(key, after[key]), fields))
 
-    if not (added or removed or changed):
-        print(f"[OK] No changes since the last run ({len(current)} channels).")
+    return Changes(added, removed, modified, len(current), first_run=False)
+
+
+def _print_changes(changes: Changes) -> None:
+    """
+    Print a change report.
+
+    Says so plainly when nothing moved: knowing the list is unchanged is as
+    useful as knowing what changed.
+    """
+    if changes.first_run:
+        print("[..] No previous list to compare against — this is the first run.")
+        return
+    if not changes:
+        print(f"[OK] No changes since the last run ({changes.total} channels).")
         return
 
-    print(
-        f"[!!] Changes since the last run: {len(added)} added, "
-        f"{len(removed)} removed, {len(changed)} modified"
-    )
-    for key in added:
-        row = after[key]
-        print(f"       + {key:9} {row.get('Frequency', ''):>10}  {row.get('Comment', '')}")
-    for key in removed:
-        row = before[key]
-        print(f"       - {key:9} {row.get('Frequency', ''):>10}  {row.get('Comment', '')}")
-    for key, fields in changed:
-        head = f"       ~ {key:9} {after[key].get('Frequency', ''):>10}  "
+    print(f"[!!] Changes since the last run: {changes.summary}")
+    for channel in changes.added:
+        print(f"       + {channel.callsign:9} {channel.frequency:>10}  {channel.comment}")
+    for channel in changes.removed:
+        print(f"       - {channel.callsign:9} {channel.frequency:>10}  {channel.comment}")
+    for channel, fields in changes.modified:
+        head = f"       ~ {channel.callsign:9} {channel.frequency:>10}  "
         print(head + fields[0])
         for extra in fields[1:]:
             print(" " * len(head) + extra)
@@ -681,13 +726,16 @@ def _write_browser_view(csv_path: str, rows: list[Row]) -> None:
     print(f"[OK] Wrote {target}")
 
 
-def build_chirp_csv(output_file: str) -> None:
+def build_chirp_csv(output_file: str) -> Changes:
     """
     Scrape ANACOM, build the channel list and write it to "output_file".
 
     Also writes the browser view alongside it, so every run leaves a
     readable, printable copy next to the one CHIRP imports, and finishes
     by reporting what changed since the previous run.
+
+    Returns those changes, so a caller — the container service, say — can
+    act on them without parsing stdout.
 
     Raises ValueError if nothing survives filtering — better than
     clobbering an existing CSV with an empty one.
@@ -708,7 +756,10 @@ def build_chirp_csv(output_file: str) -> None:
     _write_csv(output_file, rows)
     print(f"[OK] Wrote {len(rows)} rows to {output_file}")
     _write_browser_view(output_file, rows)
-    _report_changes(previous, rows)
+
+    changes = _describe_changes(previous, rows)
+    _print_changes(changes)
+    return changes
 
 
 def main() -> None:
