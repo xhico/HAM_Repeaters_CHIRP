@@ -274,14 +274,30 @@ moves on.
 ## Browser view
 
 Every run also writes `chirp.html` next to the CSV — the same channels as
-a self-contained page, with all 18 CHIRP columns, every callsign linked
-to its page on [radioamador.info](https://www.radioamador.info/), and a
-filter box that matches any field as you type.
+a self-contained page, and a filter box that matches any field as you
+type.
+
+It shows the columns worth reading rather than all eighteen: `Location`,
+`Name`, `Frequency`, `Offset`, `rToneFreq`, `cToneFreq`, `Comment` and
+`Distance`. The rest are constant or empty across the whole list, so they
+would only cost width — they all remain in the CSV.
+
+Two of those columns are links:
+
+| Click | Goes to |
+|-------|---------|
+| the **callsign** | that station's record in ANACOM's registry |
+| the **distance** | the site's coordinates on Google Maps |
+
+Both need data that is not in the CSV — ANACOM's record id and the site's
+coordinates — so they appear on pages built by `HAM_Repeaters_CHIRP.py`.
+A page rendered from a CSV alone shows the same text, unlinked, rather
+than pointing somewhere that cannot resolve.
 
 Open it in a browser, or **File → Print → Save as PDF** for a printed
-reference: the print stylesheet switches to A4 landscape, drops the
-filter box, repeats the table header on every page and avoids splitting
-rows across pages.
+reference: the print stylesheet switches to A4 portrait, drops the filter
+box, prints both links as plain black text, repeats the table header on
+every page and avoids splitting rows across pages.
 
 The page needs no network access and no assets, so it works offline.
 

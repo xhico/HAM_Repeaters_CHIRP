@@ -49,6 +49,17 @@ _DISPLAY_COLUMNS: tuple[str, ...] = (
 # from HOME_CENTER_LAT / HOME_CENTER_LON.
 _DISTANCE_COLUMN = "Distance"
 
+# Rows carry "latitude,longitude" under this key when
+# HAM_Repeaters_CHIRP.py built them, taken from ANACOM's detail page. Like
+# the record id it never reaches the CSV, so a page rendered from a CSV
+# alone shows the distance as plain text.
+COORDS_FIELD = "_coords"
+
+# Google's documented "drop a pin here" form. The distance value is what
+# links here, putting the map one click from the number you are already
+# reading rather than behind a column of its own.
+_MAPS_URL = "https://www.google.com/maps/search/?api=1&query={coords}"
+
 # Rows carry that distance in km under this key when
 # HAM_Repeaters_CHIRP.py built them. As a fallback — a page rendered from
 # a CSV alone — it is read back off the end of the Comment.
@@ -104,8 +115,9 @@ td.name { font-weight: 600; }
 td.name a { color: var(--accent); text-decoration: none; }
 td.name a:hover { text-decoration: underline; }
 td.wide { white-space: normal; min-width: 11rem; width: 100%; }
-td.dist { text-align: right; white-space: nowrap; }
-th:last-child { text-align: right; }
+td.dist, th.dist { text-align: right; white-space: nowrap; }
+td.dist a { color: var(--accent); text-decoration: none; }
+td.dist a:hover { text-decoration: underline; }
 tbody tr.hidden { display: none; }
 footer { margin-top: 1rem; color: var(--muted); font-size: .8rem; }
 
@@ -118,7 +130,7 @@ footer { margin-top: 1rem; color: var(--muted); font-size: .8rem; }
   thead { display: table-header-group; }   /* repeat the header on every page */
   tr { page-break-inside: avoid; }
   th { position: static; color: #000; }
-  td.name a { color: #000; text-decoration: none; }
+  td.name a, td.dist a { color: #000; text-decoration: none; }
   tbody tr:nth-child(even) { background: #f2f2f2; -webkit-print-color-adjust: exact; }
 }
 """
@@ -191,39 +203,49 @@ def _split_distance(row: dict[str, str]) -> tuple[str, str]:
         return comment, ""
 
 
-def _cell_html(column: str, value: str, eucla_id: str) -> str:
-    """
-    Render one cell, linking the callsign to its ANACOM record.
-
-    Everything else is plain escaped text. Without an id — a page rendered
-    straight from a CSV — the callsign is shown unlinked rather than
-    pointing somewhere that cannot resolve.
-    """
-    if column != "Name" or not value or not eucla_id:
-        return html.escape(value)
-    url = _ANACOM_DETAIL_URL.format(eucla_id=quote(eucla_id, safe=""))
+def _link(url: str, label: str) -> str:
+    """One external link, opened in a new tab."""
     return (
         f'<a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener">'
-        f"{html.escape(value)}</a>"
+        f"{html.escape(label)}</a>"
     )
+
+
+def _cell_html(column: str, value: str, eucla_id: str, coords: str) -> str:
+    """
+    Render one cell.
+
+    The callsign links to its ANACOM record, and the distance to the site
+    on Google Maps. Everything else is plain escaped text. Missing an id
+    or coordinates — a page rendered straight from a CSV — the cell stays
+    unlinked rather than pointing somewhere that cannot resolve.
+    """
+    if column == "Name" and value and eucla_id:
+        return _link(_ANACOM_DETAIL_URL.format(eucla_id=quote(eucla_id, safe="")), value)
+    if column == _DISTANCE_COLUMN and value and coords:
+        return _link(_MAPS_URL.format(coords=quote(coords, safe=",")), value)
+    return html.escape(value)
 
 
 def build_html(rows: list[dict[str, str]], source: str) -> str:
     """Render the rows as one self-contained HTML document."""
     columns = _DISPLAY_COLUMNS + (_DISTANCE_COLUMN,)
-    head = "".join(f"<th>{html.escape(name)}</th>" for name in columns)
+    head = "".join(
+        f'<th class="{_cell_class(name)}">{html.escape(name)}</th>' for name in columns
+    )
 
     body = []
     for row in rows:
         comment, distance = _split_distance(row)
         shown = {**row, "Comment": comment, _DISTANCE_COLUMN: distance}
+        coords = (row.get(COORDS_FIELD) or "").strip()
         # A lowercased copy of every shown field backs the filter box, so
         # typing a callsign, a locator or a tone all narrow the table.
         haystack = " ".join((shown.get(name) or "") for name in columns).lower()
         eucla_id = row.get(ANACOM_ID_FIELD) or ""
         cells = "".join(
             f'<td class="{_cell_class(name)}">'
-            f'{_cell_html(name, shown.get(name) or "", eucla_id)}</td>'
+            f'{_cell_html(name, shown.get(name) or "", eucla_id, coords)}</td>'
             for name in columns
         )
         body.append(f'<tr data-search="{html.escape(haystack, quote=True)}">{cells}</tr>')

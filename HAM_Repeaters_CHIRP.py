@@ -390,15 +390,19 @@ def _to_chirp_row(
     else:
         duplex = ""
 
-    # Distance from home, when a position is configured. Stations whose
-    # coordinates will not parse keep a distance of None and sort last
-    # within their frequency rather than pretending to be at zero km.
+    # ANACOM publishes the site's coordinates on the detail page. They
+    # drive the distance when a home position is set, and the browser
+    # view's map link either way, so they are parsed unconditionally.
+    latitude = _parse_dms(detail.get("latitude", ""))
+    longitude = _parse_dms(detail.get("longitude", ""))
+    located = latitude is not None and longitude is not None
+
+    # Stations whose coordinates will not parse keep a distance of None
+    # and sort last within their frequency rather than pretending to be
+    # at zero km.
     distance: float | None = None
-    if home is not None:
-        latitude = _parse_dms(detail.get("latitude", ""))
-        longitude = _parse_dms(detail.get("longitude", ""))
-        if latitude is not None and longitude is not None:
-            distance = _distance_km(home, latitude, longitude)
+    if home is not None and located:
+        distance = _distance_km(home, latitude, longitude)
 
     # "Local da Estação" holds the QTH locator. Channel designator and
     # license holder round out something readable in CHIRP's comment column.
@@ -419,6 +423,9 @@ def _to_chirp_row(
         # back to the registry. Not a CHIRP column, so it never reaches
         # the CSV either.
         chirp_to_html.ANACOM_ID_FIELD: record["eucla_id"],
+        # The site's coordinates, for the browser view's map link. Another
+        # non-CHIRP key the writer drops.
+        chirp_to_html.COORDS_FIELD: f"{latitude:.6f},{longitude:.6f}" if located else "",
         "Location": "",
         "Name": record["callsign"],
         "Frequency": f"{out_f:.4f}",
