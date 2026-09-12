@@ -108,7 +108,19 @@ th {
   position: sticky; top: 0; background: var(--bg); z-index: 1;
   font-weight: 600; font-size: .72rem; text-transform: uppercase;
   letter-spacing: .04em; color: var(--muted);
+  cursor: pointer; user-select: none;
 }
+th:hover { color: var(--fg); }
+th:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* A dim marker on every header shows which columns sort, and reserves
+   the arrow's width so sorting never shifts the columns sideways.
+   Literal glyphs rather than CSS escape sequences: a backslash escape
+   written here would be read as a Python octal escape first, smuggling a
+   control character into the stylesheet. */
+th::after { content: " ↕"; font-size: .9em; opacity: .35; }
+th[data-sort] { color: var(--fg); }
+th[data-sort="asc"]::after { content: " ↑"; opacity: 1; }
+th[data-sort="desc"]::after { content: " ↓"; opacity: 1; }
 tbody tr:nth-child(even) { background: var(--stripe); }
 td.num { font-variant-numeric: tabular-nums; }
 td.name { font-weight: 600; }
@@ -129,7 +141,8 @@ footer { margin-top: 1rem; color: var(--muted); font-size: .8rem; }
   table { font-size: 8.5pt; }
   thead { display: table-header-group; }   /* repeat the header on every page */
   tr { page-break-inside: avoid; }
-  th { position: static; color: #000; }
+  th { position: static; color: #000; cursor: auto; }
+  th::after { content: "" !important; }
   td.name a, td.dist a { color: #000; text-decoration: none; }
   tbody tr:nth-child(even) { background: #f2f2f2; -webkit-print-color-adjust: exact; }
 }
@@ -158,6 +171,64 @@ _SCRIPT = """
 
   box.addEventListener('input', apply);
   apply();
+
+  // ---- sorting -----------------------------------------------------
+  // Clicking a header sorts by it; clicking the same one again reverses.
+  // Filtering and sorting are independent: sorting only reorders rows,
+  // so whatever the filter has hidden stays hidden.
+  var body = document.querySelector('tbody');
+  var headers = Array.prototype.slice.call(
+    document.querySelectorAll('thead th'));
+  var sorted = -1;
+  var descending = false;
+
+  function value(row, index, type) {
+    var text = row.cells[index].textContent.trim();
+    if (type !== 'num') return text;
+    // "83 km" and "145.6000" both start with the number that matters.
+    var number = parseFloat(text);
+    // NaN would compare false against everything and scramble the order,
+    // so empty cells are reported as missing and pinned to the bottom.
+    return isNaN(number) ? null : number;
+  }
+
+  function sortBy(index) {
+    var type = headers[index].dataset.type;
+    descending = sorted === index ? !descending : false;
+    sorted = index;
+
+    var direction = descending ? -1 : 1;
+    rows.sort(function (a, b) {
+      var x = value(a, index, type);
+      var y = value(b, index, type);
+      // A blank cell sorts last whichever way the column is pointing:
+      // flipping the direction should not promote missing data to the top.
+      if (x === null || y === null) {
+        return x === null && y === null ? 0 : (x === null ? 1 : -1);
+      }
+      if (type === 'text') return x.localeCompare(y, 'pt') * direction;
+      return (x < y ? -1 : x > y ? 1 : 0) * direction;
+    });
+
+    headers.forEach(function (th, i) {
+      if (i === index) th.dataset.sort = descending ? 'desc' : 'asc';
+      else delete th.dataset.sort;
+    });
+    // One reflow rather than 139: the fragment is assembled off-document.
+    var fragment = document.createDocumentFragment();
+    rows.forEach(function (row) { fragment.appendChild(row); });
+    body.appendChild(fragment);
+  }
+
+  headers.forEach(function (th, index) {
+    th.addEventListener('click', function () { sortBy(index); });
+    th.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        sortBy(index);
+      }
+    });
+  });
 })();
 """
 
@@ -179,6 +250,17 @@ def _cell_class(column: str) -> str:
     if column == _DISTANCE_COLUMN:
         return "num dist"
     return "num"
+
+
+def _column_type(column: str) -> str:
+    """
+    How a column sorts: "num" compares as a number, "text" alphabetically.
+
+    Every column here is numeric except the callsign and the comment, and
+    "Distance" counts as numeric even though its cells read "83 km" — the
+    sort parses the leading number out.
+    """
+    return "text" if column in ("Name", "Comment") else "num"
 
 
 def _split_distance(row: dict[str, str]) -> tuple[str, str]:
@@ -231,7 +313,9 @@ def build_html(rows: list[dict[str, str]], source: str) -> str:
     """Render the rows as one self-contained HTML document."""
     columns = _DISPLAY_COLUMNS + (_DISTANCE_COLUMN,)
     head = "".join(
-        f'<th class="{_cell_class(name)}">{html.escape(name)}</th>' for name in columns
+        f'<th class="{_cell_class(name)}" data-type="{_column_type(name)}"'
+        f' tabindex="0" role="button">{html.escape(name)}</th>'
+        for name in columns
     )
 
     body = []

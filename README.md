@@ -75,7 +75,7 @@ being a registry, not a bug in this script.
 - **Distance** — with `HOME_CENTER_LAT` / `HOME_CENTER_LON` set, appends
   each repeater's distance from you to its `Comment` (see below).
 - **Browser view** — every run also writes `chirp.html`, the same
-  channels as a filterable, printable page (see below).
+  channels as a filterable, sortable, printable page (see below).
 - **Change report** — each run ends by saying what moved since the
   previous one: stations added, removed, or with altered settings.
 - **Refuses to guess** — if the scrape returns implausibly few rows, the
@@ -274,8 +274,11 @@ moves on.
 ## Browser view
 
 Every run also writes `chirp.html` next to the CSV — the same channels as
-a self-contained page, and a filter box that matches any field as you
-type.
+a self-contained page, with a filter box that matches any field as you
+type and sortable columns: click a header to sort by it, click the same
+one again to reverse. Filtering and sorting are independent, so sorting a
+filtered list keeps the filter. A blank cell always sorts to the bottom,
+whichever way the column points.
 
 It shows the columns worth reading rather than all eighteen: `Location`,
 `Name`, `Frequency`, `Offset`, `rToneFreq`, `cToneFreq`, `Comment` and
