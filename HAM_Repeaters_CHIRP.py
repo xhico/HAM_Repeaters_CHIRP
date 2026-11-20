@@ -749,6 +749,11 @@ def _print_changes(changes: Changes) -> None:
             print(" " * len(head) + str(extra))
 
 
+def browser_view_path(csv_path: str) -> str:
+    """Where the HTML view of "csv_path" lives: "chirp.csv" -> "chirp.html"."""
+    return os.path.splitext(csv_path)[0] + ".html"
+
+
 def _write_browser_view(csv_path: str, rows: list[Row]) -> None:
     """
     Write the HTML view beside the CSV, as "chirp.csv" -> "chirp.html".
@@ -756,7 +761,7 @@ def _write_browser_view(csv_path: str, rows: list[Row]) -> None:
     A problem here must not cost a finished scrape, so it is reported and
     the CSV — the thing the radio actually needs — still stands.
     """
-    target = os.path.splitext(csv_path)[0] + ".html"
+    target = browser_view_path(csv_path)
     try:
         with open(target, "w", encoding="utf-8") as f:
             f.write(chirp_to_html.build_html(rows, csv_path))

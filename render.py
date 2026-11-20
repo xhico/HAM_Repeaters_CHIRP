@@ -263,13 +263,22 @@ def _shows_distance(changes: Changes) -> bool:
     return any(_split_comment(c)[1] for c in channels)
 
 
-def _footer(changes: Changes, source: str, interval_hours: float | None) -> str:
+def _files_note(source: str, interval_hours: float | None, attached: list[str]) -> str:
+    """'Checked weekly. The updated chirp.csv and chirp.html are attached.'"""
+    cadence = f"Checked {_cadence(interval_hours)}. " if interval_hours else ""
+    if not attached:
+        return f"{cadence}{source} is already updated with these changes."
+    names = " and ".join(attached) if len(attached) <= 2 else ", ".join(attached[:-1]) + f" and {attached[-1]}"
+    verb = "is" if len(attached) == 1 else "are"
+    return f"{cadence}The updated {names} {verb} attached."
+
+
+def _footer(changes: Changes, source: str, interval_hours: float | None, attached: list[str]) -> str:
     distance = f"{DISTANCE_NOTE}<br>" if _shows_distance(changes) else ""
-    cadence = f"Checked {_cadence(interval_hours)}; " if interval_hours else ""
     return (
         f"<strong>{_e(LICENSED_NOTE)}</strong> A licensed repeater may be switched off or not yet built.<br>"
         f"{distance}"
-        f"{cadence}{_e(source)} is already updated with these changes.<br>"
+        f"{_e(_files_note(source, interval_hours, attached))}<br>"
         f'Source: <a href="{_e(REGISTRY_URL)}" style="color:#667085;">ANACOM licence registry</a> '
         "(Estações de Uso Comum). HAM Repeaters CHIRP."
     )
@@ -299,7 +308,13 @@ def _shell(title: str, subtitle: str, preheader: str, inner: str, footer: str) -
 </body></html>"""
 
 
-def build_html(changes: Changes, source: str, now: datetime, interval_hours: float | None = None) -> str:
+def build_html(
+    changes: Changes,
+    source: str,
+    now: datetime,
+    interval_hours: float | None = None,
+    attached: list[str] | None = None,
+) -> str:
     stats = f"""
     <tr><td style="padding:16px 24px 0;">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {LINE};border-radius:10px;">
@@ -318,7 +333,7 @@ def build_html(changes: Changes, source: str, now: datetime, interval_hours: flo
         _subtitle(changes, source, now),
         preheader,
         inner,
-        _footer(changes, source, interval_hours),
+        _footer(changes, source, interval_hours, attached or []),
     )
 
 
@@ -333,7 +348,13 @@ def _text_channel(channel: Channel) -> list[str]:
     return [f"{head}  {settings}" if settings else head] + ([f"    {where}"] if where else [])
 
 
-def build_text(changes: Changes, source: str, now: datetime, interval_hours: float | None = None) -> str:
+def build_text(
+    changes: Changes,
+    source: str,
+    now: datetime,
+    interval_hours: float | None = None,
+    attached: list[str] | None = None,
+) -> str:
     lines = [
         f"HAM REPEATERS — {_title(changes)}",
         _subtitle(changes, source, now),
@@ -360,25 +381,29 @@ def build_text(changes: Changes, source: str, now: datetime, interval_hours: flo
     lines += ["", LICENSED_NOTE]
     if _shows_distance(changes):
         lines.append(DISTANCE_NOTE)
-    if interval_hours:
-        lines.append(f"Checked {_cadence(interval_hours)}; {source} is already updated with these changes.")
+    lines.append(_files_note(source, interval_hours, attached or []))
     lines.append(f"Source: {REGISTRY_URL}")
     return "\n".join(lines)
 
 
 def build_message(
-    changes: Changes, source: str, interval_hours: float | None = None, now: datetime | None = None
+    changes: Changes,
+    source: str,
+    interval_hours: float | None = None,
+    now: datetime | None = None,
+    attached: list[str] | None = None,
 ) -> Message:
     """
     Render a change report.
 
     "changes" is the Changes record HAM_Repeaters_CHIRP.build_chirp_csv
     returns; "source" is the CSV it wrote, named in the body so the reader
-    knows which file now holds the new list.
+    knows which file now holds the new list. "attached" names the files
+    going out with the message, so the footer can say they are there.
     """
     now = now or datetime.now()
     return Message(
         subject=build_subject(changes),
-        html_body=build_html(changes, source, now, interval_hours),
-        text_body=build_text(changes, source, now, interval_hours),
+        html_body=build_html(changes, source, now, interval_hours, attached),
+        text_body=build_text(changes, source, now, interval_hours, attached),
     )

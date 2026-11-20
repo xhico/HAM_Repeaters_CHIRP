@@ -2,9 +2,9 @@
 mailer
 ======
 
-SMTP delivery for the change report, using nothing but the standard
-library, so the container stays dependency-free like the rest of the
-project.
+SMTP delivery for the change report, with the channel list attached,
+using nothing but the standard library, so the container stays
+dependency-free like the rest of the project.
 
 Configuration comes from the environment (see .env.example):
 
@@ -16,9 +16,11 @@ Nothing here reads a .env file itself: the service loads that once at
 startup and puts the values in the environment.
 """
 
+import mimetypes
 import os
 import smtplib
 import ssl
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
@@ -119,15 +121,33 @@ def verify(config: SmtpConfig) -> bool:
     return True
 
 
-def send(config: SmtpConfig, subject: str, text_body: str, html_body: str) -> None:
+def _attach(mail: EmailMessage, path: str) -> None:
     """
-    Deliver one message to every recipient.
+    Attach one file, typed from its extension.
 
-    Recipients go in Bcc so the delivered copy does not name the whole
-    list, with the envelope passed explicitly — left to itself,
-    send_message would derive it from To plus Bcc and deliver twice to
-    anyone who is both a recipient and the sender.
+    A file that cannot be read is skipped with a warning rather than
+    failing the send: the report in the body is the point, the files are
+    a convenience.
     """
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as exc:
+        print(f"[!!] Not attaching {path}: {type(exc).__name__}: {exc}")
+        return
+    content_type, _ = mimetypes.guess_type(path)
+    maintype, _, subtype = (content_type or "application/octet-stream").partition("/")
+    mail.add_attachment(data, maintype=maintype, subtype=subtype, filename=os.path.basename(path))
+
+
+def compose(
+    config: SmtpConfig,
+    subject: str,
+    text_body: str,
+    html_body: str,
+    attachments: Sequence[str] = (),
+) -> EmailMessage:
+    """Build the message send() delivers, with "attachments" as file paths."""
     mail = EmailMessage()
     mail["Subject"] = subject
     mail["From"] = config.sender
@@ -141,7 +161,27 @@ def send(config: SmtpConfig, subject: str, text_body: str, html_body: str) -> No
 
     mail.set_content(text_body)
     mail.add_alternative(html_body, subtype="html")
+    for path in attachments:
+        _attach(mail, path)
+    return mail
 
+
+def send(
+    config: SmtpConfig,
+    subject: str,
+    text_body: str,
+    html_body: str,
+    attachments: Sequence[str] = (),
+) -> None:
+    """
+    Deliver one message to every recipient.
+
+    Recipients go in Bcc so the delivered copy does not name the whole
+    list, with the envelope passed explicitly — left to itself,
+    send_message would derive it from To plus Bcc and deliver twice to
+    anyone who is both a recipient and the sender.
+    """
+    mail = compose(config, subject, text_body, html_body, attachments)
     try:
         with _connect(config) as server:
             server.send_message(mail, to_addrs=config.recipients)

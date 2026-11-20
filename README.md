@@ -231,7 +231,9 @@ at the same instant. `CHIRP_INTERVAL_HOURS` is a floor, minimum 1.
 
 **Mail only on change.** Nothing is sent when the list is unchanged, and
 nothing on the very first run — a fresh container adopting 139 repeaters
-is not news. Recipients are sent as Bcc, so no one sees the others. With
+is not news. The fresh `chirp.csv` and `chirp.html` go out attached,
+ready to import or open — distances included, so mind who is on
+`EMAIL_TO`. Recipients are sent as Bcc, so no one sees the others. With
 `EMAIL_TO` or `SMTP_HOST` unset the service still runs and still
 rebuilds; changes are logged instead. SMTP is probed once at startup, so
 bad credentials surface immediately rather than a month later when the

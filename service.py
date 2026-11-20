@@ -96,6 +96,24 @@ def _handle_signal(signum, _frame) -> None:
     _shutdown.set()
 
 
+def _attachments(output_file: str) -> list[str]:
+    """
+    The files to mail with the report: the CSV, and its browser view.
+
+    The view is written after the CSV, so one older than the CSV is left
+    over from an earlier run whose write failed this time. That copy
+    would disagree with the report, so it is left out rather than sent.
+    """
+    paths = [output_file]
+    view = chirp.browser_view_path(output_file)
+    try:
+        if os.path.getmtime(view) >= os.path.getmtime(output_file):
+            paths.append(view)
+    except OSError:
+        pass
+    return paths
+
+
 def _run_once(output_file: str, smtp: mailer.SmtpConfig, interval: int) -> bool:
     """
     Rebuild the list once and mail the report if anything moved.
@@ -121,9 +139,15 @@ def _run_once(output_file: str, smtp: mailer.SmtpConfig, interval: int) -> bool:
         _log("[!!] Changes found but no EMAIL_TO/SMTP_HOST configured — not mailing")
         return True
 
-    message = render.build_message(changes, os.path.basename(output_file), interval / 3600)
+    attachments = _attachments(output_file)
+    message = render.build_message(
+        changes,
+        os.path.basename(output_file),
+        interval / 3600,
+        attached=[os.path.basename(path) for path in attachments],
+    )
     try:
-        mailer.send(smtp, message.subject, message.text_body, message.html_body)
+        mailer.send(smtp, message.subject, message.text_body, message.html_body, attachments)
     except mailer.MailError as exc:
         # The CSV is already written, so the next cycle would compare
         # against it and consider these changes old news. Say so loudly.
