@@ -34,6 +34,7 @@ from datetime import datetime
 
 import HAM_Repeaters_CHIRP as chirp
 import mailer
+import render
 
 # ANACOM changes slowly and each run costs ~140 requests, so the default
 # is weekly. The floor is an hour: anything tighter is pointless against a
@@ -95,7 +96,7 @@ def _handle_signal(signum, _frame) -> None:
     _shutdown.set()
 
 
-def _run_once(output_file: str, smtp: mailer.SmtpConfig) -> bool:
+def _run_once(output_file: str, smtp: mailer.SmtpConfig, interval: int) -> bool:
     """
     Rebuild the list once and mail the report if anything moved.
 
@@ -120,9 +121,9 @@ def _run_once(output_file: str, smtp: mailer.SmtpConfig) -> bool:
         _log("[!!] Changes found but no EMAIL_TO/SMTP_HOST configured — not mailing")
         return True
 
-    subject, text_body, html_body = mailer.render_changes(changes, os.path.basename(output_file))
+    message = render.build_message(changes, os.path.basename(output_file), interval / 3600)
     try:
-        mailer.send(smtp, subject, text_body, html_body)
+        mailer.send(smtp, message.subject, message.text_body, message.html_body)
     except mailer.MailError as exc:
         # The CSV is already written, so the next cycle would compare
         # against it and consider these changes old news. Say so loudly.
@@ -155,7 +156,7 @@ def main() -> None:
         _log("[!!] EMAIL_TO or SMTP_HOST unset — changes will only be logged")
 
     if _bool("CHIRP_RUN_ON_START", True):
-        ok = _run_once(output_file, smtp)
+        ok = _run_once(output_file, smtp, interval)
     else:
         _log("[..] CHIRP_RUN_ON_START is false — waiting for the first interval")
         ok = True
@@ -166,7 +167,7 @@ def main() -> None:
         _log(f"[..] Next rebuild in {delay / 3600:.1f}h")
         if _shutdown.wait(delay):
             break
-        ok = _run_once(output_file, smtp)
+        ok = _run_once(output_file, smtp, interval)
 
     _log("[..] Stopped")
 

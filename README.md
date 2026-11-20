@@ -120,6 +120,7 @@ HAM_Repeaters_CHIRP/
 ├── chirp_to_html.py         # renders the CSV as a browser page
 ├── service.py               # timer loop + email, the container entry point
 ├── mailer.py                # SMTP delivery for the change report
+├── render.py                # the change-report email, HTML and plain text
 ├── Dockerfile               # image definition
 ├── docker-compose.yaml      # ready-to-run service
 ├── .env.example             # template for your settings

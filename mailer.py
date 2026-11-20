@@ -16,7 +16,6 @@ Nothing here reads a .env file itself: the service loads that once at
 startup and puts the values in the environment.
 """
 
-import html
 import os
 import smtplib
 import ssl
@@ -151,54 +150,3 @@ def send(config: SmtpConfig, subject: str, text_body: str, html_body: str) -> No
 
     print(f"[OK] Emailed {subject!r} to {len(config.recipients)} recipient(s)")
 
-
-def render_changes(changes, source: str) -> tuple[str, str, str]:
-    """
-    Render a change report as "(subject, text body, html body)".
-
-    "changes" is the Changes record HAM_Repeaters_CHIRP.build_chirp_csv
-    returns. Both bodies carry the same information: mail clients that
-    refuse HTML still get the full report.
-    """
-    subject = f"HAM Repeaters — {changes.summary}"
-
-    lines = [f"Changes since the last run: {changes.summary}", ""]
-    for channel in changes.added:
-        lines.append(f"+ {channel.callsign:9} {channel.frequency:>10}  {channel.comment}")
-    for channel in changes.removed:
-        lines.append(f"- {channel.callsign:9} {channel.frequency:>10}  {channel.comment}")
-    for channel, fields in changes.modified:
-        lines.append(f"~ {channel.callsign:9} {channel.frequency:>10}")
-        lines.extend(f"      {field}" for field in fields)
-    lines += ["", f"{changes.total} channels in total, from {source}."]
-    text_body = "\n".join(lines)
-
-    def row(marker: str, colour: str, channel, detail: str) -> str:
-        return (
-            f'<tr><td style="padding:4px 10px 4px 0;color:{colour};font-weight:700">{marker}</td>'
-            f'<td style="padding:4px 10px 4px 0;font-weight:600">{html.escape(channel.callsign)}</td>'
-            f'<td style="padding:4px 10px 4px 0;text-align:right;'
-            f'font-variant-numeric:tabular-nums">{html.escape(channel.frequency)}</td>'
-            f'<td style="padding:4px 0">{detail}</td></tr>'
-        )
-
-    rows = [row("+", "#1a7f37", c, html.escape(c.comment)) for c in changes.added]
-    rows += [row("-", "#b42318", c, html.escape(c.comment)) for c in changes.removed]
-    rows += [
-        row("~", "#9a6700", c, "<br>".join(html.escape(f) for f in fields))
-        for c, fields in changes.modified
-    ]
-
-    html_body = (
-        '<div style="font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;'
-        'color:#16181d">'
-        f"<p style=\"margin:0 0 12px\"><strong>Changes since the last run:</strong> "
-        f"{html.escape(changes.summary)}</p>"
-        '<table style="border-collapse:collapse;font-size:13px">'
-        f"{''.join(rows)}"
-        "</table>"
-        f'<p style="margin:14px 0 0;color:#6b7280;font-size:12px">'
-        f"{changes.total} channels in total, from {html.escape(source)}.</p>"
-        "</div>"
-    )
-    return subject, text_body, html_body

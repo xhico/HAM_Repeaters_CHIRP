@@ -285,6 +285,16 @@ def _split_distance(row: dict[str, str]) -> tuple[str, str]:
         return comment, ""
 
 
+def anacom_url(eucla_id: str) -> str:
+    """The station's record in ANACOM's registry."""
+    return _ANACOM_DETAIL_URL.format(eucla_id=quote(eucla_id, safe=""))
+
+
+def maps_url(coords: str) -> str:
+    """A pin on Google Maps at "latitude,longitude"."""
+    return _MAPS_URL.format(coords=quote(coords, safe=","))
+
+
 def _link(url: str, label: str) -> str:
     """One external link, opened in a new tab."""
     return (
@@ -303,9 +313,9 @@ def _cell_html(column: str, value: str, eucla_id: str, coords: str) -> str:
     unlinked rather than pointing somewhere that cannot resolve.
     """
     if column == "Name" and value and eucla_id:
-        return _link(_ANACOM_DETAIL_URL.format(eucla_id=quote(eucla_id, safe="")), value)
+        return _link(anacom_url(eucla_id), value)
     if column == _DISTANCE_COLUMN and value and coords:
-        return _link(_MAPS_URL.format(coords=quote(coords, safe=",")), value)
+        return _link(maps_url(coords), value)
     return html.escape(value)
 
 

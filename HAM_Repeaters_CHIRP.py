@@ -627,11 +627,36 @@ def _comparable(row: Row) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class Channel:
-    """One station in a change report: its callsign, frequency and comment."""
+    """
+    One station in a change report.
+
+    Callsign, frequency and comment are always there. The rest feed the
+    emailed report: the shift and tone to program, plus the ANACOM record
+    id and site coordinates it links to. A station read back from the
+    previous CSV has no id or coordinates — neither is a CHIRP column — so
+    a removed station simply goes unlinked.
+    """
 
     callsign: str
     frequency: str
     comment: str
+    duplex: str = ""
+    offset: str = ""
+    tone: str = ""
+    anacom_id: str = ""
+    coords: str = ""
+
+
+@dataclass(frozen=True)
+class FieldChange:
+    """One CHIRP column that differs between runs, before and after."""
+
+    name: str
+    old: str
+    new: str
+
+    def __str__(self) -> str:
+        return f"{self.name}: {self.old or '(blank)'} -> {self.new or '(blank)'}"
 
 
 @dataclass(frozen=True)
@@ -646,7 +671,7 @@ class Changes:
 
     added: list[Channel]
     removed: list[Channel]
-    modified: list[tuple[Channel, list[str]]]
+    modified: list[tuple[Channel, list[FieldChange]]]
     total: int
     first_run: bool
 
@@ -664,7 +689,19 @@ class Changes:
 
 def _channel(key: str, row: Row) -> Channel:
     """Describe one row for a change report."""
-    return Channel(key, (row.get("Frequency") or "").strip(), (row.get("Comment") or "").strip())
+    def get(name: str) -> str:
+        return (row.get(name) or "").strip()
+
+    return Channel(
+        callsign=key,
+        frequency=get("Frequency"),
+        comment=get("Comment"),
+        duplex=get("Duplex"),
+        offset=get("Offset"),
+        tone=get("rToneFreq"),
+        anacom_id=get(chirp_to_html.ANACOM_ID_FIELD),
+        coords=get(chirp_to_html.COORDS_FIELD),
+    )
 
 
 def _describe_changes(previous: list[Row], current: list[Row]) -> Changes:
@@ -676,14 +713,10 @@ def _describe_changes(previous: list[Row], current: list[Row]) -> Changes:
     added = [_channel(key, after[key]) for key in sorted(set(after) - set(before))]
     removed = [_channel(key, before[key]) for key in sorted(set(before) - set(after))]
 
-    modified: list[tuple[Channel, list[str]]] = []
+    modified: list[tuple[Channel, list[FieldChange]]] = []
     for key in sorted(set(before) & set(after)):
         was, now = _comparable(before[key]), _comparable(after[key])
-        fields = [
-            f"{name}: {was[name] or '(blank)'} -> {now[name] or '(blank)'}"
-            for name in was
-            if was[name] != now[name]
-        ]
+        fields = [FieldChange(name, was[name], now[name]) for name in was if was[name] != now[name]]
         if fields:
             modified.append((_channel(key, after[key]), fields))
 
@@ -711,9 +744,9 @@ def _print_changes(changes: Changes) -> None:
         print(f"       - {channel.callsign:9} {channel.frequency:>10}  {channel.comment}")
     for channel, fields in changes.modified:
         head = f"       ~ {channel.callsign:9} {channel.frequency:>10}  "
-        print(head + fields[0])
+        print(head + str(fields[0]))
         for extra in fields[1:]:
-            print(" " * len(head) + extra)
+            print(" " * len(head) + str(extra))
 
 
 def _write_browser_view(csv_path: str, rows: list[Row]) -> None:
